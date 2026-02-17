@@ -244,7 +244,8 @@ class TrafficEngine:
                 else:
                     # Check if we reached the target?
                     # Current lane end is considered "current position"
-                    curr_end_x, curr_end_y = self.map.lane_endpoints[current_lane]
+                    # FIX: Convert CuPy scalar to Python int for indexing
+                    curr_end_x, curr_end_y = self.map.lane_endpoints[int(current_lane)]
                     dist_to_target = abs(curr_end_x - tgt_x) + abs(curr_end_y - tgt_y)
                     
                     # Vanishing Threshold (e.g., 50m)
@@ -263,7 +264,8 @@ class TrafficEngine:
                         for opt_lane in valid_opts:
                             # Heuristic: Distance from NEXT lane's end to target
                             # Getting closer?
-                            opt_end_x, opt_end_y = self.map.lane_endpoints[opt_lane]
+                            # FIX: Convert CuPy scalar to Python int for indexing
+                            opt_end_x, opt_end_y = self.map.lane_endpoints[int(opt_lane)]
                             d = abs(opt_end_x - tgt_x) + abs(opt_end_y - tgt_y)
                             
                             if d < min_d:

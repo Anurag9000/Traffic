@@ -16,7 +16,7 @@ if FORCE_CPU:
     xp = np
     USING_GPU = False
     GPU_NAME = None
-    print("ℹ️  GPU Acceleration DISABLED: Forced CPU mode")
+    print("[INFO] GPU Acceleration DISABLED: Forced CPU mode")
 else:
     try:
         import cupy as cp
@@ -42,7 +42,7 @@ else:
             xp = np
             USING_GPU = False
             GPU_NAME = None
-            print(f"⚠️  GPU Acceleration DISABLED: CUDA failed ({e})")
+            print(f"[WARN] GPU Acceleration DISABLED: CUDA failed ({e})")
             print("   Falling back to CPU (NumPy)")
             
     except ImportError:

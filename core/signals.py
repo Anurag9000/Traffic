@@ -405,4 +405,5 @@ class SignalControllerVector:
 
     def get_batch_states(self, node_ids: np.ndarray, phase_ids: np.ndarray) -> np.ndarray:
         """Get signal states for batch of (node, phase) pairs."""
-        return self.states[node_ids, phase_ids]
+        # Convert to int arrays for CuPy compatibility
+        return self.states[node_ids.astype(int), phase_ids.astype(int)]

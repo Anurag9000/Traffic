@@ -38,12 +38,12 @@ print(f"   ✅ TrafficEngine created")
 
 # Test 6: Spawn vehicles
 print("\n6. Testing vehicle spawning...")
-import numpy as np
+import numpy as np_cpu  # Use CPU NumPy for array creation
 engine.spawn_vehicles(
     count=5,
-    lane_ids=np.array([0, 0, 1, 1, 2], dtype=np.int32),
-    positions=np.zeros(5, dtype=np.float32),
-    types=np.array([0, 0, 1, 1, 2], dtype=np.int32)
+    lane_ids=xp.array([0, 0, 1, 1, 2], dtype=xp.int32),
+    positions=xp.zeros(5, dtype=xp.float32),
+    types=xp.array([0, 0, 1, 1, 2], dtype=xp.int32)
 )
 print(f"   ✅ Spawned {engine.active_count} vehicles")
 

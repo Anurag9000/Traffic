@@ -41,14 +41,16 @@ class LaneMap:
         self.speed_limits[lane_id] = speed_limit
         self.signal_node_idx[lane_id] = signal_node
         self.signal_phase_idx[lane_id] = signal_phase
-        # FIX: Use np.array for CuPy compatibility (CuPy doesn't accept tuples/lists)
+        # FIX: Element-wise assignment for CuPy compatibility (CuPy doesn't accept tuples/lists)
         self.lane_endpoints[lane_id, 0] = endpoint[0]
         self.lane_endpoints[lane_id, 1] = endpoint[1]
         
         if next_lanes:
+            # FIX: Convert list to array for CuPy compatibility
+            next_lanes_arr = np.array(next_lanes, dtype=np.int32) if isinstance(next_lanes, list) else next_lanes
             # Fill adjacency, pad/truncate to max_connections
             n = min(len(next_lanes), self.max_connections)
-            self.adjacency[lane_id, :n] = next_lanes[:n]
+            self.adjacency[lane_id, :n] = next_lanes_arr[:n]
             # Simple equal probability for now if choice exists
             if n > 0:
                 self.turn_probs[lane_id, :n] = 1.0 / n

@@ -117,7 +117,10 @@ class TrafficEngine:
         actual_v_leader = np.where(valid_leader_mask, v_leader, 0.0)
         
         # 4. IDM
-        acc = calculate_idm_vectorized(v, actual_v_leader, gaps, sorted_max_speeds)
+        # IDM parameters (standard values)
+        a_max = 2.0  # max acceleration (m/s^2)
+        b_comfort = 3.0  # comfortable deceleration (m/s^2)
+        acc = calculate_idm_vectorized(v, actual_v_leader, gaps, sorted_max_speeds, a_max, b_comfort)
         
         # 5. SIGNAL LOGIC
         if self.signals:

@@ -1,0 +1,88 @@
+﻿Importing...
+[WARN] GPU Acceleration DISABLED: CUDA failed ('charmap' codec can't encode character '\u2705' in position 0: character maps to <undefined>)
+   Falling back to CPU (NumPy)
+Creating network...
+Running step...
+python : Traceback 
+(most recent call 
+last):
+At line:1 char:19
++ cd 
+D:\TrafficSim; 
+python debug_full_t
+race.py 2>&1 | 
+Out-File -Encodin 
+...
++                  
+ ~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~
+    + CategoryInfo 
+             : 
+NotSpecifi    ed: 
+(Traceback (mo    
+st recent call las 
+   t)::String) [], 
+Re    moteException
+    + 
+FullyQualifiedEr   
+ rorId : 
+NativeComm    
+andError
+ 
+  File "D:\TrafficS
+im\debug_full_trace
+.py", line 12, in 
+<module>
+    network.step()
+  File "D:\TrafficS
+im\core\grid_networ
+k.py", line 69, in 
+step
+    
+self.engine.step()
+  File "D:\TrafficS
+im\core\engine.py",
+ line 120, in step
+    acc = calculate
+_idm_vectorized(v, 
+actual_v_leader, 
+gaps, 
+sorted_max_speeds)
+TypeError: calculat
+e_idm_vectorized() 
+missing 2 required 
+positional 
+arguments: 'a_max' 
+and 'b_comfort'
+
+During handling of 
+the above 
+exception, another 
+exception occurred:
+
+Traceback (most 
+recent call last):
+  File "D:\TrafficS
+im\debug_full_trace
+.py", line 15, in 
+<module>
+    
+print(f"\n\u274c 
+ERROR: {e}\n")
+  File "C:\Users\DE
+LL\AppData\Local\Pr
+ograms\Python\Pytho
+n310\lib\encodings\
+cp1252.py", line 
+19, in encode
+    return codecs.c
+harmap_encode(input
+,self.errors,encodi
+ng_table)[0]
+UnicodeEncodeError:
+ 'charmap' codec 
+can't encode 
+character '\u274c' 
+in position 2: 
+character maps to 
+<undefined>

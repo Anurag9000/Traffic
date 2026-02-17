@@ -94,7 +94,9 @@ class TrafficEngine:
         lane_ids = active_vehicles[:, IDX_LANE_ID].astype(int)
         positions = active_vehicles[:, IDX_POS_ON_LANE]
         
-        sort_indices = np.lexsort((-positions, lane_ids))
+        # CuPy requires array input for lexsort, not tuple
+        sort_keys = np.vstack((-positions, lane_ids))
+        sort_indices = np.lexsort(sort_keys)
         
         sorted_vehicles = active_vehicles[sort_indices]
         sorted_lengths = active_lengths[sort_indices]

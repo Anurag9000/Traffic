@@ -3,8 +3,10 @@ from typing import Tuple, Dict, Optional, List
 from core.physics import update_kinematics, calculate_idm_vectorized
 from core.lanes import LaneMap
 from core.signals import SignalControllerVector, RED, GREEN
+import random  # Moved to top for efficiency
 
-# Constants
+
+# Vehicle State Indices
 IDX_ID = 0
 IDX_X = 1
 IDX_Y = 2
@@ -17,6 +19,11 @@ IDX_STATUS = 8
 IDX_START_TIME = 9 # New: Track start time for delay calc
 IDX_TARGET_X = 10 # Destination X
 IDX_TARGET_Y = 11 # Destination Y
+
+# Lane Routing Constants
+ARRIVAL_THRESHOLD_M = 50.0  # Distance threshold for arrival (meters)
+LANE_ID_ARRIVED = -2  # Special signal: vehicle arrived at destination
+LANE_ID_DEAD_END = -1  # Special signal: dead end, vehicle should exit
 
 # Total columns
 NUM_COLS = 12
@@ -262,22 +269,16 @@ class TrafficEngine:
                     curr_end_x, curr_end_y = self.map.lane_endpoints[int(current_lane)]
                     dist_to_target = abs(curr_end_x - tgt_x) + abs(curr_end_y - tgt_y)
                     
-                    # Vanishing Threshold (e.g., 50m)
-                    if dist_to_target < 50.0:
-                         best_next_lane = -2 # Special Signal: Arrived!
+                    # Check if vehicle arrived at destination
+                    if dist_to_target < ARRIVAL_THRESHOLD_M:
+                         best_next_lane = LANE_ID_ARRIVED  # Vehicle arrived!
                     else:
-                        # Pick best next lane
-                        best_dist = 1e9
-                        best_lane = valid_opts[0]
-                        
-                        # Tie-breaking: random choice among equals
-                        # But for now simple min
+                        # Pick best next lane by minimizing distance to target
                         candidates = []
                         min_d = 1e9
                         
                         for opt_lane in valid_opts:
                             # Heuristic: Distance from NEXT lane's end to target
-                            # Getting closer?
                             # FIX: Convert CuPy scalar to Python int for indexing
                             opt_end_x, opt_end_y = self.map.lane_endpoints[int(opt_lane)]
                             d = abs(opt_end_x - tgt_x) + abs(opt_end_y - tgt_y)
@@ -289,7 +290,6 @@ class TrafficEngine:
                                 candidates.append(opt_lane)
                                 
                         # Pick random from candidates to distribute flow
-                        import random
                         best_next_lane = random.choice(candidates)
             else:
                 # Random Walk (Default)

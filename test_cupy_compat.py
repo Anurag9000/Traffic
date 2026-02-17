@@ -46,7 +46,7 @@ test_step("3. Empty step", test_empty_step)
 def test_spawn():
     # Spawner needs entry lanes for the network
     entry_lanes = list(range(min(4, network.map.num_lanes)))
-    count = network.spawner.spawn_uniform(entry_lanes, network.engine)
+    count = network.spawner.step(entry_lanes, network.engine)
     return count
 
 count = test_step("4. Spawn vehicles", test_spawn)

@@ -68,7 +68,8 @@ class BaseTrafficVisualizer(ABC):
         try:
             self.font = pygame.font.SysFont("Arial", 12)
             self.font_large = pygame.font.SysFont("Arial", 24)
-        except Exception:
+        except Exception as e:
+            print(f"WARNING: Font initialization failed: {e}. UI text will not be displayed.")
             self.font = None
             self.font_large = None
         

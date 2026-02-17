@@ -48,6 +48,9 @@ def calculate_idm_vectorized(
     # Combined acceleration
     accel = a_max * (free_term - interaction_term)
     
+    # Bound acceleration to prevent extreme values
+    accel = xp.clip(accel, -b_comfort * 2.0, a_max)
+    
     return accel
 
 

@@ -10,9 +10,13 @@ import pygame
 from typing import Any, Dict, Optional, Tuple
 
 from core.base_visualizer import BaseTrafficVisualizer
-from traffic_grid.python_sim.core import car_pixel, move_dir, stop_line_pixel, DT
-from core.signal_control.dynamic import DynamicIntersectionController
-from traffic_grid.python_sim.grid_network import TrafficGridNetwork
+from core.grid_network import TrafficGridNetwork
+from core.dynamic import DynamicIntersectionController
+
+# Constants
+DT = 0.1  # Simulation timestep (seconds)
+CAR_PIXEL = 8  # Vehicle size in pixels
+STOP_LINE_PIXEL = 4  # Stop line thickness
 
 
 class GridVisualizer(BaseTrafficVisualizer):

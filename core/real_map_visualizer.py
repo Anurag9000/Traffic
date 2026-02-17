@@ -10,8 +10,10 @@ import math
 from typing import Tuple
 
 from core.base_visualizer import BaseTrafficVisualizer
-from traffic_real.real_network import RealTrafficNetwork
-from traffic_grid.python_sim.core import DT
+from core.real_network import RealTrafficNetwork
+
+# Constants
+DT = 0.1  # Simulation timestep (seconds)
 
 
 class RealMapVisualizer(BaseTrafficVisualizer):

@@ -39,7 +39,8 @@ class RealTrafficNetwork:
                  spawn_rate: float = 1.0, # Unified Default 
                  variation: float = 0.5,  # Unified Default
                  seed: int = 42,
-                 map_filter: str = "backbone"):
+                 map_filter: str = "backbone",
+                 control_mode: int = MODE_ADAPTIVE):  # ADD: control mode parameter
         
         # Map Loading Logic
         if not graphml_path:
@@ -118,7 +119,7 @@ class RealTrafficNetwork:
         self.engine = TrafficEngine(self.lane_map, self.vector_signals, max_vehicles=20000)
         
         # 3. Unified Spawner
-        self.spawner = TrafficSpawner(mean_rate=spawn_rate, variation=variation, dt=DT, seed=seed)
+        self.spawner = Spawner(mean_rate=spawn_rate, variation=variation, dt=DT, seed=seed)
         self.all_lane_ids = list(self.adapter.edge_to_id.values())
         
         self.time = 0.0

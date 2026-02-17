@@ -1,0 +1,302 @@
+from core.gpu import xp as np
+from typing import Tuple, Dict, Optional, List
+from core.physics import update_kinematics, calculate_idm_vectorized
+from core.lanes import LaneMap
+from core.signals import SignalControllerVector, RED, GREEN
+
+# Constants
+IDX_ID = 0
+IDX_X = 1
+IDX_Y = 2
+IDX_VEL = 3
+IDX_ACC = 4
+IDX_LANE_ID = 5
+IDX_POS_ON_LANE = 6
+IDX_TYPE_ID = 7 
+IDX_STATUS = 8 
+IDX_START_TIME = 9 # New: Track start time for delay calc
+IDX_TARGET_X = 10 # Destination X
+IDX_TARGET_Y = 11 # Destination Y
+
+# Total columns
+NUM_COLS = 12
+
+SENSOR_RANGE = 50.0 
+
+class TrafficEngine:
+    def __init__(self, lane_map: LaneMap, signals: SignalControllerVector = None, max_vehicles: int = 10000, dt: float = 0.1):
+        self.map = lane_map 
+        self.signals = signals
+        self.max_vehicles = max_vehicles
+        self.dt = dt
+        self.active_count = 0
+        self.current_time = 0.0
+        
+        # Main State Array
+        self.vehicles = np.zeros((max_vehicles, NUM_COLS), dtype=np.float32)
+        
+        # Aux Arrays
+        self.lengths = np.zeros(max_vehicles, dtype=np.float32) 
+        self.max_speeds = np.zeros(max_vehicles, dtype=np.float32)
+        
+        self.next_id = 1
+        
+        # Metrics Storage
+        # List of tuples: (vehicle_id, start_time, end_time, status)
+        self.completed_trips: List[Tuple[int, float, float, int]] = []
+        
+    def spawn_vehicles(self, count: int, lane_ids: np.ndarray, positions: np.ndarray, 
+                       types: np.ndarray, targets: Optional[np.ndarray] = None):
+        if self.active_count + count > self.max_vehicles:
+            raise OverflowError("Max vehicles limit reached!")
+            
+        start_idx = self.active_count
+        end_idx = start_idx + count
+        indices = np.arange(start_idx, end_idx)
+        
+        self.vehicles[indices, IDX_ID] = np.arange(self.next_id, self.next_id + count)
+        self.vehicles[indices, IDX_LANE_ID] = lane_ids
+        self.vehicles[indices, IDX_POS_ON_LANE] = positions
+        self.vehicles[indices, IDX_TYPE_ID] = types
+        self.vehicles[indices, IDX_STATUS] = 1.0
+        self.vehicles[indices, IDX_VEL] = 0.0 
+        self.vehicles[indices, IDX_START_TIME] = self.current_time # Record Start
+        
+        if targets is not None:
+            self.vehicles[indices, IDX_TARGET_X] = targets[:, 0]
+            self.vehicles[indices, IDX_TARGET_Y] = targets[:, 1]
+        else:
+            # Mark as No Target (-1)
+            self.vehicles[indices, IDX_TARGET_X] = -1.0
+            self.vehicles[indices, IDX_TARGET_Y] = -1.0
+        
+        self.lengths[indices] = 5.0 
+        self.max_speeds[indices] = 30.0 
+        
+        self.active_count += count
+        self.next_id += count
+        
+    def step(self):
+        self.current_time += self.dt
+        
+        if self.active_count == 0:
+            if self.signals:
+                dummy_counts = np.zeros((self.signals.num_nodes, self.signals.num_phases + 1), dtype=np.int32)
+                self.signals.update(self.dt, dummy_counts)
+            return
+
+        n = self.active_count
+        active_vehicles = self.vehicles[:n]
+        active_lengths = self.lengths[:n]
+        active_max_speeds = self.max_speeds[:n]
+        
+        # 1. Sort Step
+        lane_ids = active_vehicles[:, IDX_LANE_ID].astype(int)
+        positions = active_vehicles[:, IDX_POS_ON_LANE]
+        
+        sort_indices = np.lexsort((-positions, lane_ids))
+        
+        sorted_vehicles = active_vehicles[sort_indices]
+        sorted_lengths = active_lengths[sort_indices]
+        sorted_max_speeds = active_max_speeds[sort_indices]
+        
+        v = sorted_vehicles[:, IDX_VEL]
+        pos = sorted_vehicles[:, IDX_POS_ON_LANE]
+        lane = sorted_vehicles[:, IDX_LANE_ID].astype(int)
+        
+        # 2. Identify Leaders & Followers
+        v_leader = np.roll(v, 1)
+        pos_leader = np.roll(pos, 1)
+        len_leader = np.roll(sorted_lengths, 1)
+        lane_leader = np.roll(lane, 1)
+        
+        # 3. Gaps
+        raw_gap = pos_leader - pos - len_leader
+        valid_leader_mask = (lane == lane_leader)
+        gaps = np.where(valid_leader_mask, raw_gap, 1000.0)
+        actual_v_leader = np.where(valid_leader_mask, v_leader, 0.0)
+        
+        # 4. IDM
+        acc = calculate_idm_vectorized(v, actual_v_leader, gaps, sorted_max_speeds)
+        
+        # 5. SIGNAL LOGIC
+        if self.signals:
+            # A. DETECTOR LOGIC 
+            lane_lens = self.map.get_lane_lengths(lane)
+            dist_to_end = lane_lens - pos
+            sensor_mask = (dist_to_end < SENSOR_RANGE) & (dist_to_end > 0.0)
+            
+            if np.any(sensor_mask):
+                detected_lanes = lane[sensor_mask]
+                det_nodes = self.map.signal_node_idx[detected_lanes]
+                det_phases = self.map.signal_phase_idx[detected_lanes]
+                
+                rows = det_nodes
+                cols = det_phases
+                
+                detector_counts = np.zeros((self.signals.num_nodes, self.signals.num_phases + 1), dtype=np.int32)
+                np.add.at(detector_counts, (rows, cols), 1)
+                
+                self.signals.update(self.dt, detector_counts)
+            else:
+                 zeros = np.zeros((self.signals.num_nodes, self.signals.num_phases + 1), dtype=np.int32)
+                 self.signals.update(self.dt, zeros)
+
+            # B. COMPLIANCE LOGIC
+            if np.any(sensor_mask): 
+                candidates_idx = np.where(sensor_mask)[0]
+                cand_lanes = lane[candidates_idx]
+                
+                node_ids = self.map.signal_node_idx[cand_lanes]
+                phase_ids = self.map.signal_phase_idx[cand_lanes]
+                
+                states = self.signals.get_batch_states(node_ids, phase_ids)
+                
+                stop_required = (states == RED) & (phase_ids > 0)
+                
+                indices_to_stop = candidates_idx[stop_required]
+                dist_for_stoppers = dist_to_end[indices_to_stop]
+                
+                dist_for_stoppers = np.maximum(dist_for_stoppers, 1.0)
+                curr_v = v[indices_to_stop]
+                
+                req_acc = -(curr_v**2) / (2.0 * dist_for_stoppers)
+                req_acc = np.minimum(req_acc, -0.5) 
+                
+                acc[indices_to_stop] = np.minimum(acc[indices_to_stop], req_acc)
+        
+        # 6. Integration
+        update_kinematics(pos, v, acc, self.dt)
+        
+        # 7. Write Back
+        sorted_vehicles[:, IDX_VEL] = v
+        sorted_vehicles[:, IDX_POS_ON_LANE] = pos
+        sorted_vehicles[:, IDX_ACC] = acc
+        
+        # 8. Boundaries
+        self._handle_boundaries(sorted_vehicles)
+
+        # 9. Commit
+        self.vehicles[:n] = sorted_vehicles
+        self.lengths[:n] = sorted_lengths
+        self.max_speeds[:n] = sorted_max_speeds
+        
+        # 10. Compact (Garbage Collect Inactive Vehicles)
+        self._compact_vehicles()
+
+    def _compact_vehicles(self):
+        if self.active_count == 0:
+            return
+            
+        status = self.vehicles[:self.active_count, IDX_STATUS]
+        mask = (status == 1.0)
+        
+        # Only compact if there are inactive vehicles
+        if not np.all(mask):
+            valid_indices = np.where(mask)[0]
+            new_count = len(valid_indices)
+            
+            # Efficiently shift valid vehicles to the front
+            if new_count > 0:
+                self.vehicles[:new_count] = self.vehicles[valid_indices]
+                self.lengths[:new_count] = self.lengths[valid_indices]
+                self.max_speeds[:new_count] = self.max_speeds[valid_indices]
+            
+            # Reset the inactive part of the array
+            self.vehicles[new_count:self.active_count] = 0
+            self.lengths[new_count:self.active_count] = 0
+            self.max_speeds[new_count:self.active_count] = 0
+            
+            self.active_count = new_count
+        
+    def _handle_boundaries(self, vehicles: np.ndarray):
+        lane_ids = vehicles[:, IDX_LANE_ID].astype(int)
+        positions = vehicles[:, IDX_POS_ON_LANE]
+        
+        lane_lengths = self.map.get_lane_lengths(lane_ids)
+        cross_mask = (positions > lane_lengths)
+        
+        if not np.any(cross_mask):
+            return
+
+        cross_indices = np.where(cross_mask)[0]
+        
+        for idx in cross_indices:
+            current_lane = int(lane_ids[idx])
+            overrun = positions[idx] - lane_lengths[idx]
+            
+            # ROUTING LOGIC
+            # 1. Check if vehicle has a target
+            tgt_x = vehicles[idx, IDX_TARGET_X]
+            tgt_y = vehicles[idx, IDX_TARGET_Y]
+            has_target = (tgt_x != -1.0)
+            
+            next_opts = self.map.adjacency[current_lane]
+            
+            best_next_lane = -1
+            
+            if has_target:
+                # Targeted Routing: Minimize Manhattan Distance to Target
+                valid_opts = [l for l in next_opts if l != -1]
+                
+                if not valid_opts:
+                    best_next_lane = -1 # Dead End
+                else:
+                    # Check if we reached the target?
+                    # Current lane end is considered "current position"
+                    curr_end_x, curr_end_y = self.map.lane_endpoints[current_lane]
+                    dist_to_target = abs(curr_end_x - tgt_x) + abs(curr_end_y - tgt_y)
+                    
+                    # Vanishing Threshold (e.g., 50m)
+                    if dist_to_target < 50.0:
+                         best_next_lane = -2 # Special Signal: Arrived!
+                    else:
+                        # Pick best next lane
+                        best_dist = 1e9
+                        best_lane = valid_opts[0]
+                        
+                        # Tie-breaking: random choice among equals
+                        # But for now simple min
+                        candidates = []
+                        min_d = 1e9
+                        
+                        for opt_lane in valid_opts:
+                            # Heuristic: Distance from NEXT lane's end to target
+                            # Getting closer?
+                            opt_end_x, opt_end_y = self.map.lane_endpoints[opt_lane]
+                            d = abs(opt_end_x - tgt_x) + abs(opt_end_y - tgt_y)
+                            
+                            if d < min_d:
+                                min_d = d
+                                candidates = [opt_lane]
+                            elif abs(d - min_d) < 1.0: # Identical distance
+                                candidates.append(opt_lane)
+                                
+                        # Pick random from candidates to distribute flow
+                        import random
+                        best_next_lane = random.choice(candidates)
+            else:
+                # Random Walk (Default)
+                best_next_lane = next_opts[0]
+            
+            next_lane = best_next_lane
+            
+            if next_lane >= 0:
+                vehicles[idx, IDX_LANE_ID] = next_lane
+                vehicles[idx, IDX_POS_ON_LANE] = overrun
+            else:
+                # Vehicle Exit (or Arrived)
+                vehicles[idx, IDX_STATUS] = 0.0
+                vehicles[idx, IDX_POS_ON_LANE] = -1000.0
+                
+                # Log Metric (Differentiate Arrival vs Exit?)
+                # For now unified.
+                
+                # Log Metric
+                v_id = int(vehicles[idx, IDX_ID])
+                start_t = vehicles[idx, IDX_START_TIME]
+                end_t = self.current_time
+                self.completed_trips.append((v_id, start_t, end_t, 1))
+
+    def get_snapshot(self):
+        return self.vehicles[:self.active_count].copy()

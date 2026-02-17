@@ -1,0 +1,243 @@
+# Unified Configuration File
+# Merges all physics configs and experiment configs
+
+# ============================================
+# PHYSICS CONFIGURATIONS
+# ============================================
+
+physics:
+  standard:
+    # Standard physics parameters for all vehicle types
+    car:
+      acceleration: 2.5      # m/s²
+      deceleration: 4.5      # m/s²
+      max_speed: 30.0        # m/s
+      length: 5.0            # m
+      width: 2.0             # m
+      tau: 1.5               # Time headway (s)
+    
+    bike:
+      acceleration: 2.5
+      deceleration: 4.5
+      max_speed: 30.0
+      length: 5.0
+      width: 2.0
+      tau: 1.5
+    
+    van:
+      acceleration: 2.5
+      deceleration: 4.5
+      max_speed: 30.0
+      length: 5.0
+      width: 2.0
+      tau: 1.5
+    
+    truck:
+      acceleration: 2.5
+      deceleration: 4.5
+      max_speed: 30.0
+      length: 5.0
+      width: 2.0
+      tau: 1.5
+  
+  aggressive:
+    # Aggressive physics - all vehicles equal
+    car:
+      acceleration: 3.5
+      deceleration: 6.0
+      max_speed: 35.0
+      length: 5.0
+      width: 2.0
+      tau: 1.0
+    
+    bike:
+      acceleration: 3.5
+      deceleration: 6.0
+      max_speed: 35.0
+      length: 5.0
+      width: 2.0
+      tau: 1.0
+    
+    van:
+      acceleration: 3.5
+      deceleration: 6.0
+      max_speed: 35.0
+      length: 5.0
+      width: 2.0
+      tau: 1.0
+    
+    truck:
+      acceleration: 3.5
+      deceleration: 6.0
+      max_speed: 35.0
+      length: 5.0
+      width: 2.0
+      tau: 1.0
+
+# ============================================
+# EXPERIMENT CONFIGURATIONS
+# ============================================
+
+experiments:
+  # Grid experiments
+  grid_baseline:
+    grid_size: 5
+    spawn_rate: 0.2
+    duration: 3600
+    control_mode: fixed
+    physics: standard
+  
+  grid_dynamic:
+    grid_size: 5
+    spawn_rate: 0.2
+    duration: 3600
+    control_mode: adaptive
+    physics: standard
+  
+  grid_fixed:
+    grid_size: 5
+    spawn_rate: 0.2
+    duration: 3600
+    control_mode: fixed
+    physics: standard
+  
+  grid_target:
+    grid_size: 5
+    spawn_rate: 0.2
+    duration: 3600
+    control_mode: adaptive
+    physics: standard
+    spawning: targeted
+    target_ratio: 0.8
+  
+  # Intersection experiments
+  intersection_baseline:
+    spawn_rate: 0.5
+    duration: 3600
+    control_mode: fixed
+    physics: standard
+  
+  intersection_dynamic:
+    spawn_rate: 0.5
+    duration: 3600
+    control_mode: adaptive
+    physics: standard
+  
+  intersection_targeted:
+    spawn_rate: 0.5
+    duration: 3600
+    control_mode: adaptive
+    physics: standard
+    spawning: targeted
+  
+  # Real map experiments (Delhi)
+  real_delhi:
+    map_name: delhi
+    spawn_rate: 0.3
+    duration: 3600
+    control_mode: adaptive
+    physics: standard
+  
+  real_delhi_dynamic:
+    map_name: delhi
+    spawn_rate: 0.3
+    duration: 3600
+    control_mode: adaptive
+    physics: standard
+  
+  real_delhi_fixed:
+    map_name: delhi
+    spawn_rate: 0.3
+    duration: 3600
+    control_mode: fixed
+    physics: standard
+  
+  real_delhi_targeted:
+    map_name: delhi
+    spawn_rate: 0.3
+    duration: 3600
+    control_mode: adaptive
+    physics: standard
+    spawning: targeted
+    target_ratio: 0.8
+  
+  real_delhi_untargeted:
+    map_name: delhi
+    spawn_rate: 0.3
+    duration: 3600
+    control_mode: adaptive
+    physics: standard
+    spawning: uniform
+  
+  real_delhi_history:
+    map_name: delhi
+    spawn_rate: 0.3
+    duration: 3600
+    control_mode: adaptive
+    physics: standard
+    mode: historical
+  
+  real_delhi_live:
+    map_name: delhi
+    spawn_rate: 0.3
+    duration: 3600
+    control_mode: adaptive
+    physics: standard
+    mode: live
+  
+  # Speed sweep experiment
+  speed_sweep:
+    grid_size: 5
+    spawn_rates: [0.1, 0.2, 0.3, 0.4, 0.5]
+    duration: 3600
+    control_mode: adaptive
+    physics: standard
+
+# ============================================
+# SIGNAL CONTROL PARAMETERS
+# ============================================
+
+signal_control:
+  fixed:
+    green_time: 30  # seconds
+    yellow_time: 3
+    all_red_time: 2
+  
+  adaptive:
+    min_green: 10
+    max_green: 60
+    yellow_time: 3
+    all_red_time: 2
+    queue_threshold: 5
+  
+  dynamic:
+    min_green: 10
+    max_green: 60
+    yellow_time: 3
+    all_red_time: 2
+    gap_out_threshold: 2.5  # seconds
+
+# ============================================
+# SPAWNING PARAMETERS
+# ============================================
+
+spawning:
+  uniform:
+    variation: 0.2  # ±20%
+  
+  targeted:
+    variation: 0.2
+    target_ratio: 0.8  # 80% of vehicles have targets
+  
+  directional:
+    variation: 0.2
+    # Lane biases defined per scenario
+
+# ============================================
+# SIMULATION PARAMETERS
+# ============================================
+
+simulation:
+  dt: 0.1  # timestep (seconds)
+  max_vehicles: 10000
+  sensor_range: 50.0  # meters

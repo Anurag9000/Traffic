@@ -1,0 +1,58 @@
+
+# Standard Physics & Control Configuration
+# Modifiable "Nitty Gritty" details
+
+global_k: 1.578125
+go_gap: 2.0
+lane_length: 1000.0
+
+k_weights:
+  # FIXED: Equal k-weights for all vehicle types (no priority)
+  car: 0.85
+  bike: 0.85
+  van: 0.85
+  truck: 0.85
+
+spawn_probabilities:
+  car: 0.5
+  bike: 0.3
+  van: 0.15
+  truck: 0.05
+
+vehicle_types:
+  # FIXED: Standardized physics for all vehicle types (no performance hierarchy)
+  car:
+    length: 4.5
+    width: 2.0
+    accel: 2.5
+    decel: 4.5
+    v_max: 60.0
+    tau: 1.0
+  bike:
+    length: 2.0
+    width: 0.8
+    accel: 2.5  # FIXED: Same as car
+    decel: 4.5  # FIXED: Same as car
+    v_max: 60.0
+    tau: 1.0    # FIXED: Same as car
+  van:
+    length: 5.5
+    width: 2.2
+    accel: 2.5  # FIXED: Same as car
+    decel: 4.5  # FIXED: Same as car
+    v_max: 60.0  # FIXED: Same as car
+    tau: 1.0     # FIXED: Same as car
+    color: [120, 200, 255]
+  truck:
+    length: 12.0
+    width: 2.5
+    accel: 2.5  # FIXED: Same as car
+    decel: 4.5  # FIXED: Same as car
+    v_max: 60.0  # FIXED: Same as car
+    tau: 1.0    # FIXED: Same as car
+
+signal_config:
+  min_green: 10.0
+  max_green: 60.0
+  yellow_time: 3.0
+  red_clearance: 2.0

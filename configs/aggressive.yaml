@@ -1,0 +1,57 @@
+
+# Aggressive Physics Configuration
+# High speeds, high acceleration, short signal timings
+
+global_k: 2.0
+go_gap: 1.5
+lane_length: 1000.0
+
+k_weights:
+  # FIXED: Equal k-weights for all vehicle types (no priority)
+  car: 0.75
+  bike: 0.75
+  van: 0.75
+  truck: 0.75
+
+spawn_probabilities:
+  car: 0.7
+  bike: 0.2
+  van: 0.05
+  truck: 0.05
+
+vehicle_types:
+  # FIXED: Standardized physics for all vehicle types (no performance hierarchy)
+  car:
+    length: 4.5
+    width: 2.0
+    accel: 3.5  # Aggressive but equal
+    decel: 5.5
+    v_max: 80.0  # Aggressive but equal
+    tau: 0.8
+  bike:
+    length: 2.0
+    width: 0.8
+    accel: 3.5  # FIXED: Same as car
+    decel: 5.5  # FIXED: Same as car
+    v_max: 80.0  # FIXED: Same as car
+    tau: 0.8    # FIXED: Same as car
+  van:
+    length: 5.5
+    width: 2.2
+    accel: 3.5  # FIXED: Same as car
+    decel: 5.5  # FIXED: Same as car
+    v_max: 80.0  # FIXED: Same as car
+    tau: 0.8    # FIXED: Same as car
+  truck:
+    length: 12.0
+    width: 2.5
+    accel: 3.5  # FIXED: Same as car
+    decel: 5.5  # FIXED: Same as car
+    v_max: 80.0  # FIXED: Same as car
+    tau: 0.8    # FIXED: Same as car
+
+signal_config:
+  min_green: 10.0
+  max_green: 40.0
+  yellow_time: 2.0
+  red_clearance: 1.0

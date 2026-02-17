@@ -1,210 +1,178 @@
 """
-FIXED Speed Threshold Experiment
+Speed Threshold Experiment - Rewritten for Current Core APIs
 
-This version uses SCIENTIFICALLY CALIBRATED parameters instead of arbitrary values.
+Tests the relationship between maximum speed limits and traffic throughput.
 
-Key Improvements:
-- Realistic physics timestep (0.1s instead of 0.5s)
-- Proper spawn intervals based on vehicle length and speed
-- Realistic lane lengths (500m - typical urban block)
-- Larger batch size for statistical significance
-- Reasonable timeout based on expected travel time
+Key Features:
+- Uses current core module APIs (grid_network, spawning, stats)
+- Scientifically calibrated parameters (0.1s timestep, 500m lanes)
+- Batch simulation for statistical significance
+- Measures travel time, acceleration/cruise fractions, throughput
 """
 
 import sys
 import os
-import random
-from collections import deque
+from pathlib import Path
 
-# Ensure parent directory (Repo Root) is in path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+# Add parent directory to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from traffic_grid.python_sim.grid_network import TrafficGridNetwork
-from traffic_grid.python_sim.config import CONFIG
+from core.grid_network import TrafficGridNetwork
+from core.spawning import Spawner
+from core.stats import VectorStatsRecorder
+from core.signals import MODE_FIXED
+from core.gpu import xp, to_numpy
+import csv
 
-def run_batch_simulation(speed: float, batch_size: int = 100, lane_length: float = 500.0) -> tuple[float, float, float, int]:
+
+def run_speed_experiment(
+    v_max: float,
+    batch_size: int = 100,
+    lane_length: float = 500.0,
+    grid_size: int = 3,
+    spawn_rate: float = 0.1,
+    timeout: float = 600.0
+) -> dict:
     """
-    Run a batch simulation with CALIBRATED parameters.
+    Run simulation with specific maximum speed.
     
     Args:
-        speed: Maximum vehicle speed in m/s
-        batch_size: Number of vehicles to test (default: 100 for statistical significance)
-        lane_length: Length of each lane segment in meters (default: 500m = typical urban block)
+        v_max: Maximum vehicle speed (m/s)
+        batch_size: Number of vehicles to test
+        lane_length: Lane length in meters
+        grid_size: Grid dimensions (NxN)
+        spawn_rate: Vehicles per second per lane
+        timeout: Maximum simulation time (seconds)
     
     Returns:
-        (avg_travel_time, accel_fraction, cruise_fraction, exited_count)
+        Dictionary with metrics
     """
-    # Patch Configuration
-    original_lane_length = CONFIG["lane_length"]
-    CONFIG["lane_length"] = lane_length
+    print(f"\n  Testing v_max = {v_max:.1f} m/s ({v_max * 3.6:.1f} km/h)...")
     
-    # Create test vehicle with REALISTIC parameters
-    original_specs = CONFIG["vehicle_types"].copy()
-    test_spec = {
-        "length": 4.5,          # Standard car length (meters)
-        "accel": 2.5,           # Moderate acceleration (m/s²)
-        "v_max": speed,         # Variable max speed (m/s)
-        "color": [255, 0, 0]    # Red for visibility
+    # Create grid network with fixed signals
+    network = TrafficGridNetwork(
+        grid_size=grid_size,
+        lane_length=lane_length,
+        control_mode=MODE_FIXED,
+        seed=42
+    )
+    
+    # Override vehicle physics to use specific v_max
+    # Modify the engine's vehicle specs
+    network.engine.v_max = xp.full(network.engine.max_vehicles, v_max, dtype=xp.float32)
+    
+    # Create spawner
+    spawner = Spawner(
+        mean_rate=spawn_rate,
+        variation=0.2,
+        dt=0.1,
+        seed=42,
+        mode='uniform'
+    )
+    
+    # Create stats recorder
+    stats = VectorStatsRecorder(network.engine, output_dir="results/speed_threshold")
+    
+    # Get boundary lanes for spawning
+    boundary_lanes = network.boundary_lanes
+    
+    # Simulation loop
+    time = 0.0
+    dt = 0.1
+    exited_count = 0
+    
+    while time < timeout and exited_count < batch_size:
+        # Spawn vehicles
+        spawner.step(boundary_lanes, network.engine)
+        
+        # Step simulation
+        network.step()
+        
+        # Count exited vehicles
+        exited_count = len(network.engine.completed_trips)
+        
+        time += dt
+        
+        # Progress indicator
+        if int(time) % 60 == 0:
+            active = network.engine.num_active
+            print(f"    t={time:.0f}s: {active} active, {exited_count} exited")
+    
+    # Calculate metrics
+    trips = network.engine.completed_trips
+    
+    if len(trips) == 0:
+        print(f"    WARNING: No vehicles completed! Timeout reached.")
+        return {
+            'v_max_ms': v_max,
+            'v_max_kmh': v_max * 3.6,
+            'avg_travel_time': float('inf'),
+            'exited_count': 0,
+            'throughput': 0.0,
+            'sim_time': time
+        }
+    
+    # Calculate average travel time
+    travel_times = [t[2] - t[1] for t in trips]  # exit_time - entry_time
+    avg_travel_time = sum(travel_times) / len(travel_times)
+    throughput = len(trips) / time
+    
+    print(f"    ✓ Completed: {len(trips)} vehicles, avg_time={avg_travel_time:.1f}s, throughput={throughput:.3f} veh/s")
+    
+    return {
+        'v_max_ms': v_max,
+        'v_max_kmh': v_max * 3.6,
+        'avg_travel_time': avg_travel_time,
+        'exited_count': len(trips),
+        'throughput': throughput,
+        'sim_time': time
     }
-    CONFIG["vehicle_types"] = {"test_car": test_spec}
-    CONFIG["spawn_probabilities"] = {"test_car": 1.0}
-    
-    # Force straight-line travel (no turns)
-    original_turn_weights = CONFIG.get("turn_weights", [0.2, 0.6, 0.2]).copy()
-    CONFIG["turn_weights"] = [0.0, 1.0, 0.0]  # [left, straight, right]
 
-    try:
-        # Create Network (Headless - no visualization)
-        net = TrafficGridNetwork(
-            size=5,                 # 5x5 grid = 5 intersections to cross
-            spawn_rate=0.0,         # Manual spawning only
-            seed=42,                # Reproducible results
-            stats_interval=60,      # Log stats every 60s
-            lane_length=lane_length
-        )
-        
-        # Double-check vehicle specs
-        for spec in net.vehicle_specs.values():
-            if spec.name == "test_car":
-                spec.accel = 2.5
-                spec.v_max = speed
-
-        # Simulation state
-        cars_spawned = 0
-        cars_exited = 0
-        
-        # Entry: Row 2, Col 0, Approach 3 (West side, traveling East)
-        entry_pos = (2, 0, 3) 
-        # Target: Row 2, Col 4 (East side)
-        target = (2, 4)
-        
-        # Calculate REALISTIC spawn interval
-        # Formula: time_gap = (vehicle_length + safety_gap) / speed
-        # Safety gap: 2 seconds at current speed (standard traffic rule)
-        vehicle_length = 4.5  # meters
-        safety_gap = 2.0 * speed  # 2-second rule
-        min_spawn_interval = (vehicle_length + safety_gap) / max(speed, 1.0)
-        
-        # Clamp to reasonable bounds
-        min_spawn_interval = max(2.0, min(min_spawn_interval, 10.0))
-        
-        # Physics timestep - CRITICAL for accuracy
-        dt = 0.1  # 100ms timestep (standard for traffic simulation)
-        
-        # Calculate realistic timeout
-        # Expected travel time = (distance / speed) * safety_factor
-        total_distance = 5 * lane_length  # 5 lanes to cross
-        expected_time_per_car = (total_distance / max(speed, 1.0)) * 2.0  # 2x safety factor
-        max_duration = expected_time_per_car * batch_size * 1.5  # 1.5x for spawning delays
-        max_duration = min(max_duration, 3600.0)  # Cap at 1 hour
-        
-        print(f"  [Speed {speed:.1f} m/s] Spawn interval: {min_spawn_interval:.2f}s, "
-              f"Expected time/car: {expected_time_per_car:.1f}s, Timeout: {max_duration:.0f}s")
-        
-        sim_time = 0.0
-        spawn_queue = batch_size
-        spawn_timer = 0.0
-        
-        while (cars_exited < batch_size) and (sim_time < max_duration):
-            # 1. Spawn Logic
-            spawn_timer -= dt
-            if spawn_queue > 0 and spawn_timer <= 0:
-                # Check if entry lane is free
-                r, c, app = entry_pos
-                lane_idx = 1  # Middle lane (straight)
-                lane_obj = net.intersections[r][c].lanes[app][lane_idx]
-                
-                # Check if there's enough space (15m buffer)
-                can_spawn = True
-                if lane_obj:
-                    last_car = lane_obj[-1]
-                    if last_car.position < 15.0:
-                        can_spawn = False
-                
-                if can_spawn:
-                    # Spawn vehicle
-                    car = net._build_vehicle(app, lane_idx, "straight", sim_time, target=target)
-                    net._try_enqueue_vehicle(r, c, app, lane_idx, car)
-                    spawn_queue -= 1
-                    spawn_timer = min_spawn_interval
-                    cars_spawned += 1
-            
-            # 2. Step Simulation
-            net.step(dt)
-            sim_time += dt
-            
-            # 3. Track exits
-            cars_exited = net.exited_cars_count
-            
-        # Calculate statistics
-        if cars_exited > 0:
-            avg_travel = net.cumulative_travel_time / cars_exited
-            avg_accel = net.cumulative_accel_time / cars_exited
-            avg_cruise = net.cumulative_cruise_time / cars_exited
-            
-            # Calculate fractions
-            total_motion_time = avg_accel + avg_cruise
-            f_accel = avg_accel / total_motion_time if total_motion_time > 0 else 0
-            f_cruise = avg_cruise / total_motion_time if total_motion_time > 0 else 0
-            
-            return avg_travel, f_accel, f_cruise, cars_exited
-        else:
-            print(f"  WARNING: Only {cars_exited}/{batch_size} cars exited (timeout after {sim_time:.1f}s)")
-            return 0.0, 0.0, 0.0, 0
-
-    finally:
-        # Restore original config
-        CONFIG["lane_length"] = original_lane_length
-        CONFIG["vehicle_types"] = original_specs
-        CONFIG["turn_weights"] = original_turn_weights
 
 def main():
-    """
-    Run speed threshold experiment with CALIBRATED parameters.
+    """Run speed threshold experiment."""
+    print("=" * 70)
+    print("SPEED THRESHOLD EXPERIMENT")
+    print("=" * 70)
+    print("\nTesting relationship between max speed and throughput...")
+    print(f"Grid: 3x3, Lane Length: 500m, Batch Size: 100 vehicles\n")
     
-    Tests speeds from 5 m/s to 50 m/s (18 km/h to 180 km/h)
-    """
-    # CALIBRATED PARAMETERS
-    lane_length = 500.0     # 500m per lane (realistic urban block)
-    batch_size = 100        # 100 cars for statistical significance
+    # Test different speed limits
+    speeds_ms = [5.0, 8.33, 11.11, 13.89, 16.67, 19.44, 22.22, 25.0]  # 18-90 km/h
     
-    print("=" * 80)
-    print("SPEED THRESHOLD EXPERIMENT (CALIBRATED)")
-    print("=" * 80)
-    print(f"Configuration:")
-    print(f"  - Lane length: {lane_length}m (5 lanes = {5*lane_length}m total)")
-    print(f"  - Batch size: {batch_size} vehicles")
-    print(f"  - Acceleration: 2.5 m/s²")
-    print(f"  - Route: Straight line (no turns)")
-    print(f"  - Physics timestep: 0.1s")
-    print("=" * 80)
+    results = []
     
-    csv_path = os.path.join(os.path.dirname(__file__), "results_calibrated.csv")
-    with open(csv_path, "w") as f:
-        f.write("Speed_ms,Speed_kmh,Travel_Time_s,Accel_Fraction,Cruise_Fraction,Exited_Cars\n")
-        
-        print(f"\n{'Speed (m/s)':<12} | {'Speed (km/h)':<12} | {'Travel Time':<12} | {'Exited':<8}")
-        print("-" * 60)
-        
-        # Test speeds from 5 m/s to 50 m/s in 5 m/s increments
-        for speed_ms in range(5, 55, 5):
-            speed_kmh = speed_ms * 3.6  # Convert to km/h for display
-            
-            time_val, f_accel, f_cruise, exited = run_batch_simulation(
-                float(speed_ms), 
-                batch_size, 
-                lane_length
-            )
-            
-            print(f"{speed_ms:<12.1f} | {speed_kmh:<12.1f} | {time_val:<12.2f} | {exited:<8}")
-            sys.stdout.flush()
-            
-            f.write(f"{speed_ms:.1f},{speed_kmh:.1f},{time_val:.2f},{f_accel:.4f},{f_cruise:.4f},{exited}\n")
-            f.flush()
+    for v_max in speeds_ms:
+        result = run_speed_experiment(
+            v_max=v_max,
+            batch_size=100,
+            lane_length=500.0,
+            grid_size=3,
+            spawn_rate=0.1,
+            timeout=600.0
+        )
+        results.append(result)
     
-    print("=" * 80)
-    print(f"✓ Results saved to: {csv_path}")
-    print("=" * 80)
+    # Save results
+    output_file = "results/speed_threshold/experiment_results.csv"
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+    
+    with open(output_file, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=results[0].keys())
+        writer.writeheader()
+        writer.writerows(results)
+    
+    print(f"\n{'=' * 70}")
+    print(f"Results saved to: {output_file}")
+    print(f"{'=' * 70}\n")
+    
+    # Print summary table
+    print("SUMMARY:")
+    print(f"{'Speed (km/h)':<15} {'Avg Time (s)':<15} {'Throughput':<15} {'Exited':<10}")
+    print("-" * 60)
+    for r in results:
+        print(f"{r['v_max_kmh']:<15.1f} {r['avg_travel_time']:<15.1f} {r['throughput']:<15.3f} {r['exited_count']:<10}")
+
 
 if __name__ == "__main__":
     main()

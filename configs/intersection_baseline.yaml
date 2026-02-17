@@ -1,0 +1,27 @@
+# Single Intersection - Baseline
+# Standard 4-way intersection with uniform flow
+# Usage: python run.py configs/intersection_baseline.yaml
+
+simulation:
+  duration: 3600.0
+  dt: 0.1
+  seed: 42
+  stats_interval: 60.0
+
+mode: intersection
+
+spawning:
+  mode: uniform
+  spawn_rate: 0.8
+  variation: 0.5
+
+signals:
+  control_mode: adaptive
+  min_green: 10.0
+  max_green: 45.0
+  yellow_time: 3.0
+  all_red_time: 2.0
+
+output:
+  output_dir: results/intersection_baseline
+  live_export: false

@@ -1,154 +1,243 @@
+"""
+Enhanced Batch Runner with Parallel Execution
 
-import yaml
-import argparse
-import sys
+Supports:
+- Sequential batch execution
+- Parallel multi-process execution
+- Custom configuration per run
+- Result aggregation and analysis
+"""
+
+import multiprocessing as mp
+from typing import List, Dict, Any, Optional
 import os
-import subprocess
+import sys
+import json
 from pathlib import Path
-from copy import deepcopy
 
-def deep_update(base, overrides):
-    for key, value in overrides.items():
-        if isinstance(value, dict) and key in base and isinstance(base[key], dict):
-            base[key] = deep_update(base[key], value)
+# Add parent directory to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from core.grid_network import TrafficGridNetwork
+from core.real_network import RealTrafficNetwork
+from core.stats import VectorStatsRecorder
+
+
+def run_single_simulation(config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Run a single simulation with given configuration.
+    
+    Args:
+        config: Configuration dictionary with keys:
+            - mode: 'grid' or 'real'
+            - output_dir: Output directory
+            - duration: Simulation duration (seconds)
+            - ... other mode-specific parameters
+    
+    Returns:
+        Result dictionary with metrics
+    """
+    mode = config.get('mode', 'grid')
+    output_dir = config.get('output_dir', 'run_data')
+    duration = config.get('duration', 3600.0)
+    
+    try:
+        # Create network based on mode
+        if mode == 'grid':
+            network = TrafficGridNetwork(
+                grid_size=config.get('grid_size', 5),
+                spawn_rate=config.get('spawn_rate', 1.0),
+                variation=config.get('variation', 0.5),
+                seed=config.get('seed', 42),
+                lane_length=config.get('lane_length', 100.0),
+                control_mode=config.get('control_mode', 'fixed'),
+                subgrid_regions=config.get('subgrid_regions', None),
+            )
+        elif mode == 'real':
+            network = RealTrafficNetwork(
+                graphml_path=config.get('graphml_path'),
+                sim_duration=duration,
+                spawn_rate=config.get('spawn_rate', 1.0),
+                variation=config.get('variation', 0.5),
+                seed=config.get('seed', 42),
+                control_mode=config.get('control_mode', 1),  # MODE_ADAPTIVE
+            )
         else:
-            base[key] = value
-    return base
-
-def set_nested(d, path, value):
-    keys = path.split('.')
-    current = d
-    for k in keys[:-1]:
-        current = current.setdefault(k, {})
-    current[keys[-1]] = value
-
-def main():
-    parser = argparse.ArgumentParser(description="Run a parameter sweep.")
-    parser.add_argument("plan", help="Path to sweep plan YAML")
-    args = parser.parse_args()
-
-    # FIX Bug #40: Validate file exists
-    if not os.path.exists(args.plan):
-        print(f"ERROR: Sweep plan file not found: {args.plan}")
-        sys.exit(1)
-    
-    with open(args.plan) as f:
-        plan = yaml.safe_load(f)
-
-    # Support 'experiments' list or legacy 'base_config'
-    experiment_configs = plan.get('experiments', [])
-    if 'base_config' in plan:
-        experiment_configs.append(plan['base_config'])
+            raise ValueError(f"Unknown mode: {mode}")
         
-    if not experiment_configs:
-        print("No experiments found in plan (experiments list or base_config).")
-        sys.exit(1)
-
-    # FIX Bug #41: Validate required fields exist
-    if 'sweep' not in plan:
-        print("ERROR: 'sweep' section missing from plan")
-        sys.exit(1)
-    
-    sweep = plan['sweep']
-    if 'parameter' not in sweep or 'values' not in sweep or 'labels' not in sweep:
-        print("ERROR: sweep section must contain 'parameter', 'values', and 'labels'")
-        sys.exit(1)
-    
-    sweep_param = sweep['parameter']
-    values = sweep['values']
-    labels = sweep['labels']
-    
-    # FIX Bug #42: Validate lengths match
-    if len(values) != len(labels):
-        print(f"ERROR: values ({len(values)}) and labels ({len(labels)}) must have same length")
-        sys.exit(1)
-
-    output_root = f"sweep_results_{Path(args.plan).stem}"
-    os.makedirs(output_root, exist_ok=True)
-    
-    configs_dir = os.path.join(output_root, "_configs")
-    os.makedirs(configs_dir, exist_ok=True)
-    
-    print(f"Starting sweep: {sweep_param} over {values}")
-
-    for base_config_path in experiment_configs:
-        print(f"=== Processing Experiment Base: {base_config_path} ===")
+        # Create stats recorder
+        stats = VectorStatsRecorder(
+            network.engine,
+            output_dir=output_dir,
+            prefix=config.get('prefix', ''),
+            live_export=config.get('live_export', False)
+        )
         
-        if not os.path.exists(base_config_path):
-            print(f"Experiment config not found: {base_config_path}")
-            continue
+        # Run simulation
+        print(f"Running simulation: {config.get('name', 'unnamed')}")
+        steps = int(duration / network.dt)
+        
+        for step in range(steps):
+            network.step()
+            
+            # Log stats every 60 seconds
+            if step % 600 == 0:
+                stats.log_step(network.time)
+        
+        # Final stats
+        stats.log_step(network.time)
+        if hasattr(stats, 'close'):
+            stats.close()
+        
+        # Calculate summary metrics
+        import pandas as pd
+        metrics_df = pd.read_csv(stats.metrics_file)
+        
+        result = {
+            'config': config,
+            'success': True,
+            'avg_speed': metrics_df['avg_speed_mps'].mean(),
+            'avg_active': metrics_df['active_vehicles'].mean(),
+            'total_throughput': metrics_df['throughput_vps'].sum(),
+            'output_dir': output_dir,
+        }
+        
+        print(f"✅ Completed: {config.get('name', 'unnamed')}")
+        return result
+    
+    except Exception as e:
+        print(f"❌ Failed: {config.get('name', 'unnamed')} - {e}")
+        return {
+            'config': config,
+            'success': False,
+            'error': str(e)
+        }
 
-        with open(base_config_path) as f:
-            base_exp_config = yaml.safe_load(f)
-            
-        physics_config_path = base_exp_config.get('config')
-        if not physics_config_path or not os.path.exists(physics_config_path):
-            # Try resolving relative to experiment config?
-            # Assuming paths are relative to repo root
-            print(f"Physics config not found: {physics_config_path}")
-            continue
-            
-        with open(physics_config_path) as f:
-            base_physics_config = yaml.safe_load(f)
 
-        exp_name = Path(base_config_path).stem
+def run_batch_sequential(configs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Run multiple simulations sequentially.
+    
+    Args:
+        configs: List of configuration dictionaries
+    
+    Returns:
+        List of result dictionaries
+    """
+    results = []
+    for i, config in enumerate(configs):
+        print(f"\n[{i+1}/{len(configs)}] Running configuration...")
+        result = run_single_simulation(config)
+        results.append(result)
+    
+    return results
 
-        for val, label in zip(values, labels):
-            print(f"--- Running sweep: {exp_name} | {label} ({val}) ---")
-            
-            # 1. Create temp physics config
-            current_physics = deepcopy(base_physics_config)
-            set_nested(current_physics, sweep_param, val)
-            
-            phys_label = f"physics_{label}_{exp_name}"
-            temp_phys_path = os.path.abspath(f"{configs_dir}/{phys_label}.yaml")
-            with open(temp_phys_path, 'w') as f:
-                yaml.dump(current_physics, f)
-                
-            # 2. Create temp experiment config
-            current_exp = deepcopy(base_exp_config)
-            current_exp['config'] = temp_phys_path
-            
-            exp_label = f"exp_{exp_name}_{label}"
-            temp_exp_path = os.path.abspath(f"{configs_dir}/{exp_label}.yaml")
-            with open(temp_exp_path, 'w') as f:
-                yaml.dump(current_exp, f)
-                
-            # 3. Run Simulation
-            mode = current_exp.get('mode', 'grid')
-            module_name = None
-            if mode == 'grid':
-                module_name = "traffic_grid.python_sim.runner"
-            elif mode == 'intersection':
-                module_name = "traffic_intersection.python_sim.runner"
-            elif mode == 'real':
-                # Map to NEW real runner
-                module_name = "traffic_real.runner"
-            else:
-                print(f"Unknown mode: {mode}")
-                continue
-                
-            # Output specific to this variation
-            run_output = f"{output_root}/{exp_name}/{label}"
-            
-            cmd = [sys.executable, "-m", module_name, "--run-config", temp_exp_path, "--output-dir", run_output]
-            # Capture output to avoid spamming console? Or just run.
-            try:
-                result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-            except subprocess.CalledProcessError as e:
-                print(f"ERROR: Run failed for {exp_label}")
-                print(f"  Command: {' '.join(cmd)}")
-                print(f"  Return code: {e.returncode}")
-                if e.stdout:
-                    print(f"  Stdout: {e.stdout[:500]}")
-                if e.stderr:
-                    print(f"  Stderr: {e.stderr[:500]}")
-                continue
-            except Exception as e:
-                print(f"ERROR: Unexpected error running {exp_label}: {e}")
-                continue
-                
-    print(f"Sweep completed. Results in {output_root}")
 
+def run_batch_parallel(
+    configs: List[Dict[str, Any]],
+    num_workers: int = 4,
+) -> List[Dict[str, Any]]:
+    """
+    Run multiple simulations in parallel.
+    
+    Args:
+        configs: List of configuration dictionaries
+        num_workers: Number of parallel processes
+    
+    Returns:
+        List of result dictionaries
+    """
+    print(f"\n🚀 Running {len(configs)} simulations with {num_workers} workers...")
+    
+    with mp.Pool(num_workers) as pool:
+        results = pool.map(run_single_simulation, configs)
+    
+    return results
+
+
+def save_batch_results(results: List[Dict[str, Any]], output_file: str = 'batch_results.json'):
+    """
+    Save batch results to JSON file.
+    
+    Args:
+        results: List of result dictionaries
+        output_file: Output JSON file path
+    """
+    with open(output_file, 'w') as f:
+        json.dump(results, f, indent=2)
+    
+    print(f"\n📊 Results saved to: {output_file}")
+
+
+def analyze_batch_results(results: List[Dict[str, Any]]):
+    """
+    Analyze and print summary of batch results.
+    
+    Args:
+        results: List of result dictionaries
+    """
+    successful = [r for r in results if r.get('success', False)]
+    failed = [r for r in results if not r.get('success', True)]
+    
+    print(f"\n{'=' * 70}")
+    print(f"BATCH EXECUTION SUMMARY")
+    print(f"{'=' * 70}")
+    print(f"Total Runs: {len(results)}")
+    print(f"Successful: {len(successful)} ({100 * len(successful) / len(results):.1f}%)")
+    print(f"Failed: {len(failed)}")
+    
+    if successful:
+        avg_speeds = [r['avg_speed'] for r in successful]
+        avg_actives = [r['avg_active'] for r in successful]
+        
+        print(f"\nPerformance Metrics:")
+        print(f"  Avg Speed: {sum(avg_speeds) / len(avg_speeds):.2f} m/s")
+        print(f"  Avg Active Vehicles: {sum(avg_actives) / len(avg_actives):.1f}")
+    
+    if failed:
+        print(f"\nFailed Runs:")
+        for r in failed:
+            print(f"  - {r['config'].get('name', 'unnamed')}: {r.get('error', 'unknown error')}")
+    
+    print(f"{'=' * 70}\n")
+
+
+# Example usage
 if __name__ == "__main__":
-    main()
+    # Example: Run grid simulations with different spawn rates
+    configs = [
+        {
+            'name': 'grid_low_spawn',
+            'mode': 'grid',
+            'grid_size': 5,
+            'spawn_rate': 0.3,
+            'duration': 1800,
+            'output_dir': 'results/batch/low_spawn',
+            'seed': 42,
+        },
+        {
+            'name': 'grid_medium_spawn',
+            'mode': 'grid',
+            'grid_size': 5,
+            'spawn_rate': 0.7,
+            'duration': 1800,
+            'output_dir': 'results/batch/medium_spawn',
+            'seed': 42,
+        },
+        {
+            'name': 'grid_high_spawn',
+            'mode': 'grid',
+            'grid_size': 5,
+            'spawn_rate': 1.2,
+            'duration': 1800,
+            'output_dir': 'results/batch/high_spawn',
+            'seed': 42,
+        },
+    ]
+    
+    # Run in parallel
+    results = run_batch_parallel(configs, num_workers=3)
+    
+    # Analyze and save
+    analyze_batch_results(results)
+    save_batch_results(results, 'batch_results.json')

@@ -1,0 +1,32 @@
+# Single Intersection - Directional Bias
+# Heavy N-S flow for rush hour simulation
+# Usage: python run.py configs/intersection_directional.yaml
+
+simulation:
+  duration: 3600.0
+  dt: 0.1
+  seed: 42
+  stats_interval: 60.0
+
+mode: intersection
+
+spawning:
+  mode: directional
+  spawn_rate: 1.0
+  variation: 0.5
+  lane_biases:
+    0: 2.0   # North entry - heavy
+    1: 0.5   # East entry - light
+    2: 2.0   # South entry - heavy
+    3: 0.5   # West entry - light
+
+signals:
+  control_mode: adaptive
+  min_green: 10.0
+  max_green: 60.0
+  yellow_time: 3.0
+  all_red_time: 2.0
+
+output:
+  output_dir: results/intersection_directional
+  live_export: false

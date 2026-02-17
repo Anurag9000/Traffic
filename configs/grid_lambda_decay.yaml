@@ -1,0 +1,34 @@
+# Grid Network - Lambda Decay
+# Time-varying spawn rates with exponential decay
+# Usage: python run.py configs/grid_lambda_decay.yaml
+
+simulation:
+  duration: 7200.0  # 2 hours to see decay effect
+  dt: 0.1
+  seed: 42
+  stats_interval: 60.0
+
+mode: grid
+
+grid:
+  grid_size: 5
+  lane_length: 100.0
+
+spawning:
+  mode: uniform
+  spawn_rate: 2.0  # Start high
+  variation: 0.3
+  lambda_decay:
+    type: exponential
+    decay_rate: 0.0003  # Gradual decay over 2 hours
+
+signals:
+  control_mode: adaptive
+  min_green: 15.0
+  max_green: 60.0
+  yellow_time: 3.0
+  all_red_time: 2.0
+
+output:
+  output_dir: results/grid_lambda_decay
+  live_export: true

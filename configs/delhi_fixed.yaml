@@ -1,0 +1,33 @@
+# Real Map - Delhi with Fixed Signals
+# OSM simulation with fixed-time control
+# Usage: python run.py configs/delhi_fixed.yaml
+
+simulation:
+  duration: 3600.0
+  dt: 0.1
+  seed: 42
+  stats_interval: 60.0
+
+mode: real
+
+real_map:
+  graphml_path: data/connaught_place.graphml
+  map_filter: backbone
+  enforce_speed_limit: true
+  enforce_lanes: true
+  enforce_oneway: true
+
+spawning:
+  mode: uniform
+  spawn_rate: 0.5
+  variation: 0.5
+
+signals:
+  control_mode: fixed
+  cycle_time: 120.0
+  yellow_time: 3.0
+  all_red_time: 2.0
+
+output:
+  output_dir: results/delhi_fixed
+  live_export: false

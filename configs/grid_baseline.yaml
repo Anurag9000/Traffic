@@ -1,0 +1,30 @@
+# Grid Network - Baseline Configuration
+# Standard uniform spawning with fixed signals
+# Usage: python run.py configs/grid_baseline.yaml
+
+simulation:
+  duration: 3600.0  # 1 hour
+  dt: 0.1
+  seed: 42
+  stats_interval: 60.0
+
+mode: grid
+
+grid:
+  grid_size: 5
+  lane_length: 100.0
+  
+spawning:
+  mode: uniform
+  spawn_rate: 1.0
+  variation: 0.5
+
+signals:
+  control_mode: fixed
+  cycle_time: 120.0
+  yellow_time: 3.0
+  all_red_time: 2.0
+
+output:
+  output_dir: results/grid_baseline
+  live_export: false

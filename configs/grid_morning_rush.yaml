@@ -1,0 +1,39 @@
+# Grid Network - Morning Rush Profile
+# Time-varying traffic with morning rush pattern
+# Usage: python run.py configs/grid_morning_rush.yaml
+
+simulation:
+  duration: 14400.0  # 4 hours (6 AM - 10 AM)
+  dt: 0.1
+  seed: 42
+  stats_interval: 60.0
+
+mode: grid
+
+grid:
+  grid_size: 5
+  lane_length: 100.0
+
+spawning:
+  mode: uniform
+  spawn_rate: 1.0  # Base rate
+  variation: 0.3
+  lambda_decay:
+    type: profile
+    profile:
+      - [0, 0.4]        # 6 AM - low
+      - [3600, 1.2]     # 7 AM - building
+      - [7200, 2.0]     # 8 AM - peak
+      - [10800, 1.5]    # 9 AM - declining
+      - [14400, 0.8]    # 10 AM - normal
+
+signals:
+  control_mode: adaptive
+  min_green: 15.0
+  max_green: 80.0
+  yellow_time: 3.0
+  all_red_time: 2.0
+
+output:
+  output_dir: results/grid_morning_rush
+  live_export: true

@@ -136,8 +136,10 @@ class TrafficEngine:
                 rows = det_nodes
                 cols = det_phases
                 
+                
                 detector_counts = np.zeros((self.signals.num_nodes, self.signals.num_phases + 1), dtype=np.int32)
-                np.add.at(detector_counts, (rows, cols), 1)
+                # CuPy requires arrays for indexing, not tuples
+                np.add.at(detector_counts, (rows.astype(int), cols.astype(int)), 1)
                 
                 self.signals.update(self.dt, detector_counts)
             else:

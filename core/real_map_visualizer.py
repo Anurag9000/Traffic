@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 from typing import Tuple
 
-from .base_visualizer import BaseTrafficVisualizer
+from core.base_visualizer import BaseTrafficVisualizer
 from traffic_real.real_network import RealTrafficNetwork
 from traffic_grid.python_sim.core import DT
 

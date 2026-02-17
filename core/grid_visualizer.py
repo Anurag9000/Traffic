@@ -9,7 +9,7 @@ from __future__ import annotations
 import pygame
 from typing import Any, Dict, Optional, Tuple
 
-from .base_visualizer import BaseTrafficVisualizer
+from core.base_visualizer import BaseTrafficVisualizer
 from traffic_grid.python_sim.core import car_pixel, move_dir, stop_line_pixel, DT
 from core.signal_control.dynamic import DynamicIntersectionController
 from traffic_grid.python_sim.grid_network import TrafficGridNetwork

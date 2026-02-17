@@ -41,7 +41,9 @@ class LaneMap:
         self.speed_limits[lane_id] = speed_limit
         self.signal_node_idx[lane_id] = signal_node
         self.signal_phase_idx[lane_id] = signal_phase
-        self.lane_endpoints[lane_id] = endpoint
+        # FIX: Use np.array for CuPy compatibility (CuPy doesn't accept tuples/lists)
+        self.lane_endpoints[lane_id, 0] = endpoint[0]
+        self.lane_endpoints[lane_id, 1] = endpoint[1]
         
         if next_lanes:
             # Fill adjacency, pad/truncate to max_connections

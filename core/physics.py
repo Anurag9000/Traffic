@@ -5,7 +5,7 @@ Implements the Intelligent Driver Model (IDM) for car-following behavior.
 All operations are GPU-accelerated via the gpu module.
 """
 
-from .gpu import xp
+from core.gpu import xp
 
 
 def calculate_idm_vectorized(

@@ -128,8 +128,10 @@ class TrafficEngine:
             
             if np.any(sensor_mask):
                 detected_lanes = lane[sensor_mask]
-                det_nodes = self.map.signal_node_idx[detected_lanes]
-                det_phases = self.map.signal_phase_idx[detected_lanes]
+                # Convert to int array for CuPy compatibility
+                detected_lanes_int = detected_lanes.astype(int)
+                det_nodes = self.map.signal_node_idx[detected_lanes_int]
+                det_phases = self.map.signal_phase_idx[detected_lanes_int]
                 
                 rows = det_nodes
                 cols = det_phases
@@ -147,8 +149,10 @@ class TrafficEngine:
                 candidates_idx = np.where(sensor_mask)[0]
                 cand_lanes = lane[candidates_idx]
                 
-                node_ids = self.map.signal_node_idx[cand_lanes]
-                phase_ids = self.map.signal_phase_idx[cand_lanes]
+                # Convert to int array for CuPy compatibility
+                cand_lanes_int = cand_lanes.astype(int)
+                node_ids = self.map.signal_node_idx[cand_lanes_int]
+                phase_ids = self.map.signal_phase_idx[cand_lanes_int]
                 
                 states = self.signals.get_batch_states(node_ids, phase_ids)
                 
@@ -213,7 +217,9 @@ class TrafficEngine:
         lane_ids = vehicles[:, IDX_LANE_ID].astype(int)
         positions = vehicles[:, IDX_POS_ON_LANE]
         
-        lane_lengths = self.map.get_lane_lengths(lane_ids)
+        # Convert to int array for CuPy compatibility
+        lane_ids_int = lane_ids.astype(int)
+        lane_lengths = self.map.get_lane_lengths(lane_ids_int)
         cross_mask = (positions > lane_lengths)
         
         if not np.any(cross_mask):
@@ -231,7 +237,8 @@ class TrafficEngine:
             tgt_y = vehicles[idx, IDX_TARGET_Y]
             has_target = (tgt_x != -1.0)
             
-            next_opts = self.map.adjacency[current_lane]
+            # Convert CuPy scalar to Python int for indexing
+            next_opts = self.map.adjacency[int(current_lane)]
             
             best_next_lane = -1
             

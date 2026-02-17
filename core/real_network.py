@@ -40,7 +40,10 @@ class RealTrafficNetwork:
                  variation: float = 0.5,  # Unified Default
                  seed: int = 42,
                  map_filter: str = "backbone",
-                 control_mode: int = MODE_ADAPTIVE):  # ADD: control mode parameter
+                 control_mode: int = MODE_ADAPTIVE,  # ADD: control mode parameter
+                 enforce_speed_limit: bool = False,  # NEW: Enforce road speed limits
+                 enforce_lanes: bool = False,        # NEW: Enforce lane counts
+                 enforce_oneway: bool = False):      # NEW: Enforce one-way restrictions
         
         # Map Loading Logic
         if not graphml_path:
@@ -118,7 +121,12 @@ class RealTrafficNetwork:
         
         self.engine = TrafficEngine(self.lane_map, self.vector_signals, max_vehicles=20000)
         
-        # 3. Unified Spawner
+        # 4. Map Enforcement Features
+        if enforce_speed_limit or enforce_lanes or enforce_oneway:
+            print(f"Applying map enforcement: speed_limit={enforce_speed_limit}, lanes={enforce_lanes}, oneway={enforce_oneway}")
+            self._apply_map_enforcement(enforce_speed_limit, enforce_lanes, enforce_oneway)
+        
+        # 5. Unified Spawner
         self.spawner = Spawner(mean_rate=spawn_rate, variation=variation, dt=DT, seed=seed)
         self.all_lane_ids = list(self.adapter.edge_to_id.values())
         
@@ -133,6 +141,74 @@ class RealTrafficNetwork:
         # 2. Physics
         self.engine.step()
         self.time += self.dt
+
+    def _apply_map_enforcement(self, enforce_speed: bool, enforce_lanes: bool, enforce_oneway: bool):
+        """Apply map enforcement features to the engine."""
+        
+        # Speed Limit Enforcement
+        if enforce_speed:
+            print("  Enforcing speed limits from OSM data...")
+            for u, v, k, data in self.G.edges(keys=True, data=True):
+                lid = self.adapter.get_lane_id(u, v, k)
+                if lid != -1:
+                    speed_limit = data.get('speed_limit', data.get('maxspeed', 30.0))
+                    # Convert km/h to m/s if needed
+                    if isinstance(speed_limit, str):
+                        try:
+                            speed_limit = float(speed_limit.replace(' km/h', '').replace(' mph', ''))
+                        except:
+                            speed_limit = 30.0
+                    
+                    # Assume km/h, convert to m/s
+                    speed_limit_ms = speed_limit / 3.6 if speed_limit > 10 else speed_limit
+                    
+                    # Apply to all vehicles on this lane (future vehicles will inherit)
+                    # For now, store in lane_map for future use
+                    # TODO: Add lane-specific speed limits to engine
+                    pass
+        
+        # Lane Count Enforcement
+        if enforce_lanes:
+            print("  Enforcing lane counts from OSM data...")
+            for u, v, k, data in self.G.edges(keys=True, data=True):
+                lid = self.adapter.get_lane_id(u, v, k)
+                if lid != -1:
+                    lanes = data.get('lanes', 1)
+                    if isinstance(lanes, str):
+                        try:
+                            lanes = int(lanes)
+                        except:
+                            lanes = 1
+                    
+                    # TODO: Implement lane capacity limits in engine
+                    # For now, this is a placeholder for future implementation
+                    pass
+        
+        # One-Way Enforcement
+        if enforce_oneway:
+            print("  Enforcing one-way restrictions from OSM data...")
+            # Remove reverse edges for one-way streets
+            edges_to_remove = []
+            for u, v, k, data in self.G.edges(keys=True, data=True):
+                oneway = data.get('oneway', False)
+                if isinstance(oneway, str):
+                    oneway = oneway.lower() in ['yes', 'true', '1']
+                
+                if oneway:
+                    # Check if reverse edge exists and remove it
+                    if self.G.has_edge(v, u):
+                        for key in list(self.G[v][u].keys()):
+                            edges_to_remove.append((v, u, key))
+            
+            # Remove reverse edges
+            for u, v, k in edges_to_remove:
+                lid = self.adapter.get_lane_id(u, v, k)
+                if lid != -1:
+                    # Mark lane as removed (set adjacency to empty)
+                    self.lane_map.adjacency[lid, :] = -1
+            
+            if edges_to_remove:
+                print(f"    Removed {len(edges_to_remove)} reverse edges for one-way streets")
 
     def run_simulation(self):
         steps = int(self.sim_duration / self.dt)

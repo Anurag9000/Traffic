@@ -9,10 +9,16 @@ class VectorStatsRecorder:
     """
     Standardized Metrics Recorder for Vector Engine.
     Scales to 20k+ vehicles.
+    
+    Features:
+    - Real-time metrics logging
+    - Trip completion tracking
+    - Live export (real-time CSV streaming)
     """
-    def __init__(self, engine, output_dir: str = "run_data", prefix: str = ""):
+    def __init__(self, engine, output_dir: str = "run_data", prefix: str = "", live_export: bool = False):
         self.engine = engine
         self.output_dir = output_dir
+        self.live_export = live_export
         
         m_name = f"{prefix}_metrics.csv" if prefix else "metrics_summary.csv"
         t_name = f"{prefix}_trips.csv" if prefix else "completed_trips.csv"
@@ -34,6 +40,18 @@ class VectorStatsRecorder:
 
         self.start_time = time.time()
         self.completed_count_prev = 0
+        
+        # Live export: keep files open for real-time streaming
+        if self.live_export:
+            self.metrics_file_handle = open(self.metrics_file, 'a', newline='', buffering=1)  # Line buffered
+            self.trips_file_handle = open(self.trips_file, 'a', newline='', buffering=1)
+            self.metrics_writer = csv.writer(self.metrics_file_handle)
+            self.trips_writer = csv.writer(self.trips_file_handle)
+        else:
+            self.metrics_file_handle = None
+            self.trips_file_handle = None
+            self.metrics_writer = None
+            self.trips_writer = None
 
     def log_step(self, current_sim_time: float):
         # 1. Active Metrics
@@ -45,32 +63,45 @@ class VectorStatsRecorder:
             
         active_count = self.engine.active_count
         
-        # 2. Throughput (Trips completed since last check?)
-        # Or cumulative?
-        # Let's do cumulative rate.
-        
+        # 2. Throughput (Trips completed since last check)
         total_completed = len(self.engine.completed_trips)
         new_completions = total_completed - self.completed_count_prev
         
-        # Append Metrics
-        with open(self.metrics_file, 'a', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                f"{current_sim_time:.2f}",
-                active_count,
-                new_completions, # Completes this step (or interval)
-                f"{avg_speed:.2f}"
-            ])
+        # 3. Write Metrics (live or buffered)
+        row = [
+            f"{current_sim_time:.2f}",
+            active_count,
+            new_completions,
+            f"{avg_speed:.2f}"
+        ]
+        
+        if self.live_export and self.metrics_writer:
+            # Live export: write immediately with line buffering
+            self.metrics_writer.writerow(row)
+        else:
+            # Buffered export: append to file
+            with open(self.metrics_file, 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(row)
             
-        # Append Trips
+        # 4. Write Trips (live or buffered)
         if new_completions > 0:
              new_trips = self.engine.completed_trips[self.completed_count_prev:]
-             with open(self.trips_file, 'a', newline='') as f:
-                 writer = csv.writer(f)
+             
+             if self.live_export and self.trips_writer:
+                 # Live export: write immediately
                  for t in new_trips:
                      vid, start, end, status = t
                      duration = end - start
-                     writer.writerow([vid, f"{start:.2f}", f"{end:.2f}", f"{duration:.2f}", status])
+                     self.trips_writer.writerow([vid, f"{start:.2f}", f"{end:.2f}", f"{duration:.2f}", status])
+             else:
+                 # Buffered export
+                 with open(self.trips_file, 'a', newline='') as f:
+                     writer = csv.writer(f)
+                     for t in new_trips:
+                         vid, start, end, status = t
+                         duration = end - start
+                         writer.writerow([vid, f"{start:.2f}", f"{end:.2f}", f"{duration:.2f}", status])
         
         self.completed_count_prev = total_completed
 
@@ -91,3 +122,11 @@ class VectorStatsRecorder:
             "throughput": len(trips) / self.engine.current_time,
             "avg_delay": sum(durations) / len(durations)
         }
+    
+    def close(self):
+        """Close live export file handles if open."""
+        if self.live_export:
+            if self.metrics_file_handle:
+                self.metrics_file_handle.close()
+            if self.trips_file_handle:
+                self.trips_file_handle.close()

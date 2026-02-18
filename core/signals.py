@@ -9,8 +9,7 @@ YELLOW = 2
 
 # Control Modes
 MODE_FIXED = 0
-MODE_ADAPTIVE = 1 # 5-Cycle Moving Average Split Recalculation (The Plan)
-MODE_GAP_OUT = 2   # Traditional Actuated (Optional)
+MODE_ADAPTIVE = 1 # 5-Cycle Moving Average Split Recalculation
 
 class SignalControllerVector:
     """
@@ -31,7 +30,6 @@ class SignalControllerVector:
     Control Modes (ALL use NEMA Dual-Ring):
     - MODE_FIXED (0): Pre-set phase durations, NEMA dual-ring structure
     - MODE_ADAPTIVE (1): Recalculated durations, NEMA dual-ring structure
-    - MODE_GAP_OUT (2): Actuated control, NEMA dual-ring structure
     
     The mode parameter only affects HOW durations are determined, NOT the underlying
     NEMA Dual-Ring Barrier architecture which is ALWAYS enforced.
@@ -262,15 +260,18 @@ class SignalControllerVector:
     
     def _is_ring1_at_barrier(self, phase: int) -> bool:
         """Check if Ring 1 phase is at a barrier point."""
-        # Barrier 1: After Phase 1 (before Phase 2)
-        # Barrier 2: After Phase 3 (before Phase 4)
-        return phase in [1, 3]
+        # NEMA Standard Barrier:
+        # Barrier 1: End of Main Street (After Phase 2 / 6)
+        # Barrier 2: End of Cross Street (After Phase 4 / 8)
+        # Note: Internal transitions (1->2 and 3->4) do NOT have barriers, allowing
+        # independent operation of Left Turns (Phase 1 vs 5) within the barrier group.
+        return phase in [2, 4]
     
     def _is_ring2_at_barrier(self, phase: int) -> bool:
         """Check if Ring 2 phase is at a barrier point."""
-        # Barrier 1: After Phase 5 (before Phase 6)
-        # Barrier 2: After Phase 7 (before Phase 8)
-        return phase in [5, 7]
+        # Barrier 1: After Phase 6
+        # Barrier 2: After Phase 8
+        return phase in [6, 8]
     
     def _cross_barrier(self, node: int):
         """Both rings cross the barrier together (synchronized)."""
@@ -321,52 +322,60 @@ class SignalControllerVector:
         self._apply_states_node(node)
 
     def _recalculate_phase_durations(self, node: int):
-        """Recalculate phase durations based on demand (Adaptive mode)."""
-        # Calculate moving average of last 5 cycles
-        hist = self.history_counts[node, :, 1:]  # Shape (NumPhases, 5)
-        avg_counts = np.mean(hist, axis=1)  # Shape (NumPhases,)
-        
-        # Calculate demand for each phase
-        # NEMA requires symmetric phases to have same duration
-        # Phase 1 & 5 must match (NB Right & EB Right)
-        # Phase 2 & 6 must match (NB Straight & EB Straight)
-        # Phase 3 & 7 must match (SB Right & WB Right)
-        # Phase 4 & 8 must match (SB Straight & WB Straight)
-        
-        p1_5_dem = max(avg_counts[1], avg_counts[5])
-        p2_6_dem = max(avg_counts[2], avg_counts[6])
-        p3_7_dem = max(avg_counts[3], avg_counts[7])
-        p4_8_dem = max(avg_counts[4], avg_counts[8])
-        
+        """
+        Recalculate phase durations based on demand (Adaptive mode).
+
+        Algorithm:
+        - At end of each full cycle, look at the last 5 completed cycles (indices 1..5).
+        - For each phase, compute the simple average of cars that moved through it
+          (throughput counts, only counted during GREEN — see engine.py detector logic).
+        - Allocate total green time proportionally to that average demand.
+        - NEMA symmetric constraint: paired phases (1&5, 2&6, 3&7, 4&8) share the same duration.
+        """
+        # User Requirement: "cycle ongoing should just depend on past 5 cycles"
+        # We use indices 1..5 which represent the 5 *previous* completed cycles.
+        # Index 0 is the accumulator for the cycle just ending (valid but excluded per user request).
+        # Shift happens AFTER this, moving Index 0 -> Index 1 for the *next* calculation.
+        hist = self.history_counts[node, :, 1:6]  # Shape: (num_phases+1, 5)
+
+        # Simple average across the 5 past cycles
+        avg_counts = np.mean(hist, axis=1)  # Shape: (num_phases+1,)
+
+        # NEMA symmetric pairs: take max demand of each concurrent pair
+        # (they run simultaneously so both need the same green window)
+        p1_5_dem = max(avg_counts[1], avg_counts[5])   # NB Right  / EB Right
+        p2_6_dem = max(avg_counts[2], avg_counts[6])   # NB Thru   / EB Thru
+        p3_7_dem = max(avg_counts[3], avg_counts[7])   # SB Right  / WB Right
+        p4_8_dem = max(avg_counts[4], avg_counts[8])   # SB Thru   / WB Thru
+
         total_dem = p1_5_dem + p2_6_dem + p3_7_dem + p4_8_dem
-        
+
         if total_dem < 1.0:
-            # Default if no traffic
+            # No data yet — keep symmetric defaults
             self.phase_durations[node, 1] = self.phase_durations[node, 5] = 15.0
             self.phase_durations[node, 2] = self.phase_durations[node, 6] = 45.0
             self.phase_durations[node, 3] = self.phase_durations[node, 7] = 15.0
             self.phase_durations[node, 4] = self.phase_durations[node, 8] = 45.0
             return
-        
-        # Allocate cycle time (minus lost time)
-        # Lost time = 4 phases * (yellow + red) * 2 rings = 8 * 5 = 40s
+
+        # Total available green time per cycle (subtract lost time for yellow+red clearance)
+        # 8 phases × (yellow 3s + red_clearance 2s) = 40s lost time
         total_green = self.cycle_time - 40.0
-        
-        # Proportional allocation with minimum green enforcement
-        raw_demands = np.array([p1_5_dem, p2_6_dem, p3_7_dem, p4_8_dem])
-        raw_demands += 0.1  # Avoid starvation
-        
+
+        # Proportional allocation — add small epsilon to prevent starvation
+        raw_demands = np.array([p1_5_dem, p2_6_dem, p3_7_dem, p4_8_dem], dtype=np.float32)
+        raw_demands += 0.1
         ratios = raw_demands / np.sum(raw_demands)
         greens = ratios * total_green
-        
-        # Enforce min green
+
+        # Enforce minimum green per phase
         greens = np.maximum(greens, self.min_green)
-        
-        # Re-normalize if needed
+
+        # Re-normalise if min_green constraints pushed total over budget
         if np.sum(greens) > total_green:
             greens = greens * (total_green / np.sum(greens))
-        
-        # Apply symmetric durations
+
+        # Write back — symmetric pairs get identical durations
         self.phase_durations[node, 1] = self.phase_durations[node, 5] = greens[0]
         self.phase_durations[node, 2] = self.phase_durations[node, 6] = greens[1]
         self.phase_durations[node, 3] = self.phase_durations[node, 7] = greens[2]

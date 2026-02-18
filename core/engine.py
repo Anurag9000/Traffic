@@ -55,7 +55,8 @@ class TrafficEngine:
     def spawn_vehicles(self, count: int, lane_ids: np.ndarray, positions: np.ndarray, 
                        types: np.ndarray, targets: Optional[np.ndarray] = None):
         if self.active_count + count > self.max_vehicles:
-            raise OverflowError("Max vehicles limit reached!")
+            print(f"WARNING: Vehicle limit reached ({self.max_vehicles}). Skipping spawn.", file=sys.stderr)
+            return
             
         start_idx = self.active_count
         end_idx = start_idx + count
@@ -133,30 +134,32 @@ class TrafficEngine:
         
         # 5. SIGNAL LOGIC
         if self.signals:
-            # A. DETECTOR LOGIC 
+            # A. DETECTOR LOGIC
+            # Only count vehicles whose phase is currently GREEN (throughput, not queue).
+            # This ensures adaptive mode weights phases by how many cars MOVED through,
+            # not how many were stuck waiting at red.
             lane_lens = self.map.get_lane_lengths(lane)
             dist_to_end = lane_lens - pos
             sensor_mask = (dist_to_end < SENSOR_RANGE) & (dist_to_end > 0.0)
-            
+
+            detector_counts = np.zeros((self.signals.num_nodes, self.signals.num_phases + 1), dtype=np.int32)
+
             if np.any(sensor_mask):
                 detected_lanes = lane[sensor_mask]
-                # Convert to int array for CuPy compatibility
                 detected_lanes_int = detected_lanes.astype(int)
                 det_nodes = self.map.signal_node_idx[detected_lanes_int]
                 det_phases = self.map.signal_phase_idx[detected_lanes_int]
-                
-                rows = det_nodes
-                cols = det_phases
-                
-                
-                detector_counts = np.zeros((self.signals.num_nodes, self.signals.num_phases + 1), dtype=np.int32)
-                # CuPy requires arrays for indexing, not tuples
-                np.add.at(detector_counts, (rows.astype(int), cols.astype(int)), 1)
-                
-                self.signals.update(self.dt, detector_counts)
-            else:
-                 zeros = np.zeros((self.signals.num_nodes, self.signals.num_phases + 1), dtype=np.int32)
-                 self.signals.update(self.dt, zeros)
+
+                # Filter: only count if the phase is currently GREEN (throughput)
+                phase_states = self.signals.get_batch_states(det_nodes, det_phases)
+                green_mask = (phase_states == GREEN)
+
+                if np.any(green_mask):
+                    rows = det_nodes[green_mask]
+                    cols = det_phases[green_mask]
+                    np.add.at(detector_counts, (rows.astype(int), cols.astype(int)), 1)
+
+            self.signals.update(self.dt, detector_counts)
 
             # B. COMPLIANCE LOGIC
             if np.any(sensor_mask): 

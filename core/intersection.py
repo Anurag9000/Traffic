@@ -11,7 +11,7 @@ from core.lanes import LaneMap
 from core.signals import SignalControllerVector, MODE_FIXED, MODE_ADAPTIVE
 from core.spawning import Spawner
 
-class SingleIntersection:
+class TrafficIntersection:
     def __init__(
         self,
         spawn_rate: float = 1.0,
@@ -54,11 +54,15 @@ class SingleIntersection:
                 
                 phase = 0
                 if l_idx == 1: # Straight
-                    if app == 0 or app == 2: phase = 2 # N/S Straight
-                    else: phase = 4 # E/W Straight
+                    if app == 0: phase = 2    # NB Straight
+                    elif app == 1: phase = 4  # EB Straight
+                    elif app == 2: phase = 6  # SB Straight
+                    elif app == 3: phase = 8  # WB Straight
                 elif l_idx == 2: # Right
-                    if app == 0 or app == 2: phase = 1 # N/S Right
-                    else: phase = 3 # E/W Right
+                    if app == 0: phase = 1    # NB Right
+                    elif app == 1: phase = 3  # EB Right
+                    elif app == 2: phase = 5  # SB Right
+                    elif app == 3: phase = 7  # WB Right
                 
                 # Next Lanes: Empty (Sink)
                 self.lane_map.set_lane(lid, self.lane_length, 13.8, [], 0, phase)

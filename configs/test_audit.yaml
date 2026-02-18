@@ -1,0 +1,23 @@
+mode: grid
+
+simulation:
+  duration: 100.0
+  dt: 0.1
+  stats_interval: 10.0
+  seed: 42
+
+grid:
+  grid_size: 3
+  lane_length: 100.0
+
+spawning:
+  mode: uniform
+  spawn_rate: 1.0
+  variation: 0.2
+
+signals:
+  control_mode: fixed
+
+output:
+  output_dir: test_results
+  live_export: false

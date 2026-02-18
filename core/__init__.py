@@ -21,7 +21,7 @@ from core.graph import TrafficGraph
 
 # Networks
 from core.grid_network import TrafficGridNetwork
-from core.intersection import SingleIntersection
+from core.intersection import TrafficIntersection
 from core.real_network import RealTrafficNetwork
 
 __version__ = '2.0.0'
@@ -37,5 +37,5 @@ __all__ = [
     # Geometry
     'LaneMap', 'GridAdapter', 'TrafficGraph',
     # Networks
-    'TrafficGridNetwork', 'SingleIntersection', 'RealTrafficNetwork',
+    'TrafficGridNetwork', 'TrafficIntersection', 'RealTrafficNetwork',
 ]

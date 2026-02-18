@@ -109,15 +109,24 @@ class RealTrafficNetwork:
         # Signals (Default Actuated/Adaptive for better flow, but compliant)
         self.vector_signals = SignalControllerVector(self.num_nodes, mode=control_mode)
         
-        # Map Signals to LaneMap
+        # Map Signals to LaneMap - Handle 3 Lanes per Edge
         for u, v, k in self.G.edges(keys=True):
-            lid = self.adapter.get_lane_id(u, v, k)
-            if lid != -1:
+            base_lid = self.adapter.get_lane_id(u, v, k)
+            if base_lid != -1:
                 v_idx = self.node_to_idx[v]
                 # Phase Assignment Heuristic: Random valid phase for compliance demo
                 phase = (hash((u,v)) % 4) * 2 + 2 
-                self.lane_map.signal_node_idx[lid] = v_idx
-                self.lane_map.signal_phase_idx[lid] = phase
+                
+                # Apply Phase
+                if self.adapter.force_uniform_lanes:
+                    # Apply to all 3 lanes (Left, Straight, Right)
+                    for i in range(3):
+                        self.lane_map.signal_node_idx[base_lid + i] = v_idx
+                        self.lane_map.signal_phase_idx[base_lid + i] = phase
+                else:
+                    # Legacy 1-Lane
+                    self.lane_map.signal_node_idx[base_lid] = v_idx
+                    self.lane_map.signal_phase_idx[base_lid] = phase
         
         self.engine = TrafficEngine(self.lane_map, self.vector_signals, max_vehicles=20000)
         
@@ -165,22 +174,17 @@ class RealTrafficNetwork:
                     # Apply to all vehicles on this lane (future vehicles will inherit)
                     # For now, store in lane_map for future use
                     # TODO: Add lane-specific speed limits to engine
-                    pass
-        
-        # Lane Count Enforcement
-        if enforce_lanes:
-            print("  Enforcing lane counts from OSM data...")
-            for u, v, k, data in self.G.edges(keys=True, data=True):
-                lid = self.adapter.get_lane_id(u, v, k)
-                if lid != -1:
-                    lanes = data.get('lanes', 1)
-                    if isinstance(lanes, str):
-                        try:
-                            lanes = int(lanes)
-                        except:
-                            lanes = 1
+                    lane_map_id = self.node_to_idx.get(u) # Wait, need lane ID not node
+                    # lid is already retrieved above: lid = self.adapter.get_lane_id(u, v, k)
                     
-                    # TODO: Implement lane capacity limits in engine
+                    if speed_limit_ms > 0:
+                        if self.adapter.force_uniform_lanes:
+                            # Apply to all 3 lanes
+                            for i in range(3):
+                                 self.lane_map.speed_limits[lid + i] = speed_limit_ms
+                        else:
+                            self.lane_map.speed_limits[lid] = speed_limit_ms
+        
                     # For now, this is a placeholder for future implementation
                     pass
         

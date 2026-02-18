@@ -1,0 +1,27 @@
+mode: real
+
+simulation:
+  duration: 3600.0
+  dt: 0.1
+  stats_interval: 60.0
+  seed: 42
+
+spawning:
+  mode: uniform
+  spawn_rate: 0.8
+  variation: 0.3
+
+real_map:
+  graphml_path: delhi_cp.graphml
+  map_filter: backbone
+  # LOOSE MODE: Ignore metadata, use defaults
+  enforce_speed_limit: false
+  enforce_lanes: false
+  enforce_oneway: false
+
+signals:
+  control_mode: adaptive
+
+output:
+  output_dir: results_loose
+  live_export: false

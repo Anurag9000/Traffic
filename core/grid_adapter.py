@@ -128,61 +128,76 @@ class GridAdapter:
             # At (r+1, c), I am arriving from North (App 0).
             # ALL turns from App 0 map to *some* approach at *some* neighbor.
             
+            # Allow multiple next_lanes for mixing
             next_lanes = []
             
-            # Calculate Next Cell
-            # Current Vector
-            vec = (0, 0)
-            if app == 0: vec = (1, 0)   # S
-            elif app == 1: vec = (0, -1) # W
-            elif app == 2: vec = (-1, 0) # N
-            elif app == 3: vec = (0, 1)  # E
-            
-            # Apply Turn to Vector
-            next_vec = vec # Straight
-            if l_idx == 0: # Left
-                # Rotate Left logic from grid_network
-                # 0(1,0) -> L(0,1)
-                # 1(0,-1) -> L(1,0)
-                # 2(-1,0) -> L(0,-1)
-                # 3(0,1) -> L(-1,0)
-                dr, dc = vec
-                next_vec = (-dc, dr)
-            elif l_idx == 2: # Right
-                dr, dc = vec
-                next_vec = (dc, -dr)
-            
-            next_r = r + next_vec[0]
-            next_c = c + next_vec[1]
-            
-            # Check Bounds
-            if 0 <= next_r < self.size and 0 <= next_c < self.size:
-                # Valid Neighbor.
-                # Which Approach corresponds to arriving at (next_r, next_c) with next_vec?
-                # If I move (0, 1) [East], I arrive at West side of next node? 
-                # No, Approach is defined by origin direction usually?
-                # GridNetwork:
-                # App 0: North -> South.
-                # If I move South (1, 0). Next node sees me coming from North.
-                # So Next Approach is determined by vector.
+            # Helper to get neighbor node coords
+            def get_neighbor(dir_vec):
+                nr, nc = r + dir_vec[0], c + dir_vec[1]
+                if 0 <= nr < self.size and 0 <= nc < self.size:
+                    return (nr, nc)
+                return None
+
+            # 1. TURN MOVEMENT (Existing Logic)
+            turn_vec = vec
+            if l_idx == 0: # Left Turn
+                turn_vec = (-vec[1], vec[0])
+            elif l_idx == 2: # Right Turn
+                turn_vec = (vec[1], -vec[0])
+            # For Center (1), Turn Vector is Straight (vec)
                 
-                next_app = -1
-                if next_vec == (1, 0): next_app = 0
-                elif next_vec == (0, -1): next_app = 1
-                elif next_vec == (-1, 0): next_app = 2
-                elif next_vec == (0, 1): next_app = 3
+            turn_neighbor = get_neighbor(turn_vec)
+            if turn_neighbor:
+                nr, nc = turn_neighbor
+                # Which approach matches this vector?
+                # If I move South (1,0), I enter from North (App 0).
+                # Map vector to Approach ID
+                entry_app = -1
+                if turn_vec == (1, 0): entry_app = 0
+                elif turn_vec == (0, -1): entry_app = 1
+                elif turn_vec == (-1, 0): entry_app = 2
+                elif turn_vec == (0, 1): entry_app = 3
                 
-                # And which lane at next intersection?
-                # Usually we can pick ANY lane (L, S, R). 
-                # This represents the choice for the Next Next turn.
-                # So we connect to ALL 3 lanes of that approach.
-                if next_app != -1:
-                    ids = [
-                        self.grid_to_id.get((next_r, next_c, next_app, 0), -1),
-                        self.grid_to_id.get((next_r, next_c, next_app, 1), -1),
-                        self.grid_to_id.get((next_r, next_c, next_app, 2), -1)
-                    ]
-                    next_lanes = [i for i in ids if i != -1]
+                # Turn Destination Lane
+                # Left (0) -> Left (0) usually? Or Center?
+                # Let's map 1-to-1 for the "Turn" portion.
+                if entry_app != -1:
+                    target_l_idx = l_idx
+                    if (nr, nc, entry_app, target_l_idx) in self.grid_to_id:
+                        next_lanes.append(self.grid_to_id[(nr, nc, entry_app, target_l_idx)])
+
+            # 2. STRAIGHT MOVEMENT (Shared Lane Logic)
+            # Allow Turn Lanes (0, 2) to also go Straight if valid.
+            # Allow Center Lane (1) to distribute to 0, 1, 2.
+            
+            straight_neighbor = get_neighbor(vec)
+            if straight_neighbor:
+                nr, nc = straight_neighbor
+                # Straight Approach ID
+                entry_app = -1
+                if vec == (1, 0): entry_app = 0
+                elif vec == (0, -1): entry_app = 1
+                elif vec == (-1, 0): entry_app = 2
+                elif vec == (0, 1): entry_app = 3
+                
+                if entry_app != -1:
+                    # Logic:
+                    # L(0) -> can also go Straight(0)
+                    # C(1) -> can go Straight(0, 1, 2) [Lane Change simulated]
+                    # R(2) -> can also go Straight(2)
+                    
+                    target_indices = []
+                    if l_idx == 0: target_indices = [0]
+                    elif l_idx == 1: target_indices = [0, 1, 2]
+                    elif l_idx == 2: target_indices = [2]
+                    
+                    for tidx in target_indices:
+                        if (nr, nc, entry_app, tidx) in self.grid_to_id:
+                            next_lanes.append(self.grid_to_id[(nr, nc, entry_app, tidx)])
+            
+            # Remove duplicates just in case (e.g. if Turn IS Straight, which shouldn't happen)
+            next_lanes = list(set(next_lanes))
+
             
             # ENDPOINT COORDINATES (For Manhattan Routing)
             # Center of node (r, c). Scale by lane_length? 

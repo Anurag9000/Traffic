@@ -298,6 +298,56 @@ class TrafficEngine:
         # Use pre-sorted arrays
         lane_ids = sorted_vehicles[:, IDX_LANE_ID].astype(int)
         pos = sorted_vehicles[:, IDX_POS_ON_LANE]
+        
+        # 6. Build Lane Index (For O(log N) lookups)
+        # Vehicles are sorted by Lane ID.
+        # We need to quickly find the slice [start, end) for any lane_id.
+        # Since lane_ids are sorted integers, we can use searchsorted or just unique.
+        
+        # Strategy:
+        # Create an index array 'lane_starts' of size (num_lanes + 1).
+        # We can populate it using:
+        # np.searchsorted(lane_ids, np.arange(num_lanes)) -> This scans N for each M. Slow if M large.
+        # Better: run length encoding on lane_ids.
+        
+        # lane_ids is sorted.
+        # unique_lanes, starts = np.unique(lane_ids, return_index=True)
+        # counts = np.diff(np.append(starts, n))
+        # Map this to a dense array?
+        # self.lane_starts = -1 * ones(num_lanes)
+        # self.lane_counts = zeros(num_lanes) 
+        # self.lane_starts[unique_lanes] = starts
+        # self.lane_counts[unique_lanes] = counts
+        
+        # This allows O(1) slice lookup: slice(lane_starts[L], lane_starts[L] + lane_counts[L])
+        
+        # Implementation:
+        unique_lanes, starts = np.unique(lane_ids, return_index=True)
+        # Calculate counts
+        # We need end indices.
+        # ends = np.append(starts[1:], n) # Logic: start of next unique is end of current
+        # counts = ends - starts
+        counts = np.diff(np.append(starts, n))
+        
+        # Map to dense arrays (on GPU/CPU)
+        # Assuming max lane ID is compatible with map.
+        num_map_lanes = self.map.num_lanes
+        
+        # Check bounds
+        if len(unique_lanes) > 0 and unique_lanes[-1] >= num_map_lanes:
+             # Sanity check fail? Or expand map?
+             # Just clip for safety or ignore.
+             valid_mask = (unique_lanes < num_map_lanes)
+             unique_lanes = unique_lanes[valid_mask]
+             starts = starts[valid_mask]
+             counts = counts[valid_mask]
+        
+        self.lane_starts = self.xp.full(num_map_lanes, -1, dtype=np.int32)
+        self.lane_counts = self.xp.zeros(num_map_lanes, dtype=np.int32)
+        
+        self.lane_starts[unique_lanes] = starts
+        self.lane_counts[unique_lanes] = counts
+        
         v = sorted_vehicles[:, IDX_VEL]
         
         # Calculate IDM
@@ -452,135 +502,196 @@ class TrafficEngine:
             return
 
         cross_indices = np.where(cross_mask)[0]
+        num_cross = len(cross_indices)
         
-        # Optimization: Pre-fetch all active vehicle locations for conflict check
-        # This is expensive O(N) check inside boundary loop, but necessary for spillback
-        active_lane_ids = vehicles[:, IDX_LANE_ID].astype(int)
-        active_positions = vehicles[:, IDX_POS_ON_LANE]
+        # Vectorized Boundary Handling
         
-        for idx in cross_indices:
-            current_lane = int(lane_ids[idx])
-            overrun = positions[idx] - lane_lengths[idx]
-            
-            # ROUTING LOGIC
-            # 1. Check if vehicle has a target
-            tgt_x = vehicles[idx, IDX_TARGET_X]
-            tgt_y = vehicles[idx, IDX_TARGET_Y]
-            has_target = (tgt_x != -1.0)
-            
-            # Convert CuPy scalar to Python int for indexing
-            next_opts = self.map.adjacency[int(current_lane)]
-            
-            best_next_lane = -1
-            
-            if has_target:
-                # Targeted Routing: Minimize Manhattan Distance to Target
-                valid_opts = [l for l in next_opts if l != -1]
+        # 1. Gather Data
+        # We process 'cross_indices' in bulk.
+        # Current Lanes
+        curr_lanes = lane_ids_int[cross_indices]
+        curr_pos = positions[cross_indices]
+        curr_lens = lane_lengths[cross_indices]
+        curr_overrun = curr_pos - curr_lens
+        
+        # Targets
+        tgt_x = vehicles[cross_indices, IDX_TARGET_X]
+        tgt_y = vehicles[cross_indices, IDX_TARGET_Y]
+        has_target = (tgt_x != -1.0)
+        
+        # 2. Lookup Next Options
+        # self.map.adjacency is (NumLanes, MaxConn)
+        # We need next options for curr_lanes.
+        # Shape: (NumCross, MaxConn)
+        next_opts = self.map.adjacency[curr_lanes] 
+        
+        # 3. Decision Logic (Vectorized)
+        # Default: First valid option? Or Random?
+        
+        best_next_lane = self.xp.full(num_cross, -1, dtype=np.int32)
+        
+        # A. Logic for Targeted Vehicles
+        # We need to iterate over options columns (0..MaxConn-1)
+        # Because we can't easily reduce across columns with condition logic in one go without masks.
+        
+        # Calculate distances for ALL options
+        # option_ends: (NumCross, MaxConn, 2)
+        # This is tricky without 3D lookup.
+        # Flatten next_opts -> (NumCross * MaxConn)
+        # Lookup endpoints -> (NumCross * MaxConn, 2)
+        # Reshape.
+        
+        flat_opts = next_opts.ravel()
+        # Filter -1 for lookup
+        valid_opts_mask = (flat_opts >= 0)
+        # Safe lookup indices (replace -1 with 0)
+        safe_lookup = self.xp.where(valid_opts_mask, flat_opts, 0)
+        
+        flat_ends = self.map.lane_endpoints[safe_lookup] # (N*M, 2)
+        
+        # Current endpoints (Start of Distance Calc)
+        curr_ends = self.map.lane_endpoints[curr_lanes] # (N, 2)
+        
+        # Expand Target to (N, M, 2)
+        # tgt_x: (N,) -> (N, M)
+        max_conn = self.map.max_connections # 4
+        tgt_expanded = self.xp.repeat(self.xp.stack([tgt_x, tgt_y], axis=1)[:, np.newaxis, :], max_conn, axis=1) # (N, 4, 2)
+        
+        opts_reshaped = flat_ends.reshape(num_cross, max_conn, 2) # (N, 4, 2)
+        
+        # Manhattan Dist
+        dists = self.xp.abs(opts_reshaped[:, :, 0] - tgt_expanded[:, :, 0]) + \
+                self.xp.abs(opts_reshaped[:, :, 1] - tgt_expanded[:, :, 1])
                 
-                if not valid_opts:
-                    best_next_lane = -1 # Dead End
-                else:
-                    # Check if we reached the target?
-                    # Current lane end is considered "current position"
-                    # FIX: Convert CuPy scalar to Python int for indexing
-                    curr_end_x, curr_end_y = self.map.lane_endpoints[int(current_lane)]
-                    dist_to_target = abs(curr_end_x - tgt_x) + abs(curr_end_y - tgt_y)
-                    
-                    # Check if vehicle arrived at destination
-                    if dist_to_target < ARRIVAL_THRESHOLD_M:
-                         best_next_lane = LANE_ID_ARRIVED  # Vehicle arrived!
-                    else:
-                        # Pick best next lane by minimizing distance to target
-                        candidates = []
-                        min_d = 1e9
-                        
-                        for opt_lane in valid_opts:
-                            # Heuristic: Distance from NEXT lane's end to target
-                            # FIX: Convert CuPy scalar to Python int for indexing
-                            opt_end_x, opt_end_y = self.map.lane_endpoints[int(opt_lane)]
-                            d = abs(opt_end_x - tgt_x) + abs(opt_end_y - tgt_y)
-                            
-                            if d < min_d:
-                                min_d = d
-                                candidates = [opt_lane]
-                            elif abs(d - min_d) < 1.0: # Identical distance
-                                candidates.append(opt_lane)
-                                
-                        # Pick random from candidates to distribute flow
-                        best_next_lane = random.choice(candidates)
-            else:
-                # Random Walk (Default)
-                # Filter valid options manually (CuPy scalar -> Python int conversion happens implicitly in iteration?)
-                # next_opts is a CuPy array if self.map.adjacency is on GPU?
-                # core/engine.py imports xp as np.
-                # If np is numpy, it works. If cupy, iterating is slow but works.
-                # Note: next_opts = self.map.adjacency[int(current_lane)] was retrieved earlier.
-                
-                valid_opts = []
-                for l in next_opts:
-                    if l != -1:
-                        valid_opts.append(l)
-                    else:
-                        break # Optimization: -1 are usually at the end
-                
-                if valid_opts:
-                    best_next_lane = random.choice(valid_opts)
-                else:
-                    best_next_lane = -1
-            
-            next_lane = best_next_lane
-            
-            # FIX 1: Spillback / Ghosting Check
-            if next_lane >= 0:
-                # Check occupancy of next_lane at start (0.0 to 8.0 meters)
-                # Overrun adds to position, so check 0 + overrun + buffer
-                # Buffer ~ 6m (car length + gap)
-                
-                # Check if any vehicle is on next_lane with pos < SAFE_BUFFER
-                entry_pos = overrun
-                safe_buffer = 8.0
-            if next_lane >= 0:
-                # Fix 7: Length-Aware Spillback Check
-                # Optimization: Only check if next_lane has ANY vehicles near start.
-                mask = (lane_ids == next_lane) & (positions < 20.0)
-                
-                if np.any(mask):
-                    # Potential conflict. check specifics.
-                    my_len = self.lengths[idx]
-                    
-                    # Leaders on target lane
-                    leaders_pos = positions[mask]
-                    leaders_len = self.lengths[mask]
-                    
-                    # Effective rear of leader = pos - length.
-                    rear_of_leader = leaders_pos - leaders_len
-                    
-                    # Minimum rear position
-                    if len(rear_of_leader) > 0:
-                        min_rear = np.min(rear_of_leader)
-                        
-                        if min_rear < (my_len + 2.0): # 2m buffer
-                             # BLOCKED! Spillback.
-                             vehicles[idx, IDX_VEL] = 0.0
-                             vehicles[idx, IDX_POS_ON_LANE] = lane_lengths[idx] - 0.5 
-                             continue 
-            
-            if next_lane >= 0:
-                vehicles[idx, IDX_LANE_ID] = next_lane
-                vehicles[idx, IDX_POS_ON_LANE] = overrun
-            else:
-                # Vehicle Exit (or Arrived)
-                vehicles[idx, IDX_STATUS] = 0.0
-                vehicles[idx, IDX_POS_ON_LANE] = -1000.0
-                
-                # Log Metric (Differentiate Arrival vs Exit?)
-                # For now unified.
-                
-                # Log Metric
-                v_id = int(vehicles[idx, IDX_ID])
-                start_t = vehicles[idx, IDX_START_TIME]
-                end_t = self.current_time
-                self.completed_trips.append((v_id, start_t, end_t, 1))
+        # Mask invalid options (Infinity distance)
+        # Reshape valid_opts_mask
+        valid_mask_2d = valid_opts_mask.reshape(num_cross, max_conn)
+        dists = self.xp.where(valid_mask_2d, dists, 1e9)
+        
+        # Find ArgMin
+        best_idx = self.xp.argmin(dists, axis=1) # (N,) -> 0..3
+        
+        # Gather best_next_lane
+        # next_opts[i, best_idx[i]]
+        # Use advanced indexing
+        row_idx = self.xp.arange(num_cross)
+        best_next_lane = next_opts[row_idx, best_idx]
+        
+        # Handle "Arrived"
+        # If dists[best] < Threshold
+        min_dists = dists[row_idx, best_idx]
+        arrived_mask = (has_target) & (min_dists < 10.0) # ARRIVAL_THRESHOLD_M
+        best_next_lane = self.xp.where(arrived_mask, -2, best_next_lane) # LANE_ID_ARRIVED = -2
+        
+        # Handle Non-Targeted (Random / First Valid)
+        # Just pick first valid? 
+        # To be robust: 'argmax(valid_mask_2d)' finds first True.
+        
+        # count valid
+        valid_counts = self.xp.sum(valid_mask_2d, axis=1)
+        no_target_mask = (~has_target) & (valid_counts > 0)
+        
+        if self.xp.any(no_target_mask):
+             # Just pick first valid for now (Col 0 usually valid if any)
+             first_valid_col = self.xp.argmax(valid_mask_2d, axis=1)
+             # Assign
+             idxs = self.xp.where(no_target_mask)[0]
+             cols = first_valid_col[idxs]
+             best_next_lane[idxs] = next_opts[idxs, cols]
+             
+        # Dead Ends (valid_counts == 0) -> -1. Handled by init -1.
+        
+        # 4. Spillback Check (Vectorized)
+        # We have 'best_next_lane' for each crosser.
+        # We need to check if 'best_next_lane' starts are clean.
+        
+        next_lane_valid = (best_next_lane >= 0)
+        
+        # Get Start/Count for next lanes
+        # Safe lookup (map -1 to 0, use mask later)
+        safe_next = self.xp.where(next_lane_valid, best_next_lane, 0)
+        nl_starts = self.lane_starts[safe_next]
+        nl_counts = self.lane_counts[safe_next]
+        
+        # conflict_mask init false
+        conflict_mask = self.xp.zeros(num_cross, dtype=bool)
+        
+        # Only check if lane serves >= 1 car
+        has_cars = (nl_counts > 0) & next_lane_valid
+        
+        if self.xp.any(has_cars):
+             check_indices = self.xp.where(has_cars)[0]
+             
+             # The index of the FIRST vehicle on target lane
+             target_veh_indices = nl_starts[check_indices]
+             
+             # Get their positions
+             # sorted_vehicles is available!
+             # We should use sorted_vehicles arrays.
+             # Wait, local var 'vehicles' is passed in. Is it sorted?
+             # _handle_boundaries is called with 'sorted_vehicles' at line 451. Yes.
+             
+             # Check POS of the LAST vehicle in the slice (Closest to start = Lowest Position if sorted Lane Asc, Pos Desc)
+             # Line 275: np.lexsort((-pos, lane)).
+             # So Lane Ascending, Pos Descending.
+             # Slice [Start, Start+Count].
+             # Item at 'Start' has HIGHEST Pos (Furthest).
+             # Item at 'Start+Count-1' has LOWEST Pos (Closest).
+             
+             # We check the item closest to start (pos=0).
+             last_veh_indices = nl_starts[check_indices] + nl_counts[check_indices] - 1
+             
+             closest_pos = vehicles[last_veh_indices, IDX_POS_ON_LANE]
+             closest_len = self.lengths[last_veh_indices]
+             
+             # Check Gap
+             # My Length
+             my_len = self.lengths[cross_indices[check_indices]]
+             
+             # Effective rear of leader = pos - length.
+             rear_pos = closest_pos - closest_len
+             
+             # Conflict if rear_pos < (my_len + 2.0)
+             local_conflict = (rear_pos < (my_len + 2.0))
+             
+             # Scatter back to conflict_mask
+             conflict_mask[check_indices] = local_conflict
+             
+        # 5. Apply Results
+        # A. Conflict -> Stop
+        stopped_mask = conflict_mask
+        if self.xp.any(stopped_mask):
+             idxs = cross_indices[stopped_mask]
+             vehicles[idxs, IDX_VEL] = 0.0
+             vehicles[idxs, IDX_POS_ON_LANE] = curr_lens[stopped_mask] - 0.5
+             
+        # B. Move
+        move_mask = (~conflict_mask) & (best_next_lane >= 0) & (best_next_lane != -2)
+        if self.xp.any(move_mask):
+             idxs = cross_indices[move_mask]
+             targets = best_next_lane[move_mask]
+             overruns = curr_overrun[move_mask]
+             
+             vehicles[idxs, IDX_LANE_ID] = targets
+             vehicles[idxs, IDX_POS_ON_LANE] = overruns
+             
+        # C. Arrived
+        arrived_mask = (best_next_lane == -2)
+        if self.xp.any(arrived_mask):
+             idxs = cross_indices[arrived_mask]
+             vehicles[idxs, IDX_STATUS] = 0.0
+             vehicles[idxs, IDX_POS_ON_LANE] = -1000.0
+             
+             ids = vehicles[idxs, IDX_ID]
+             starts = vehicles[idxs, IDX_START_TIME]
+             
+             # Logging to list (Python overhead, inevitable for now)
+             ids_cpu = self.gpu.to_numpy(ids)
+             starts_cpu = self.gpu.to_numpy(starts)
+             end_t = self.current_time
+             
+             for i in range(len(ids_cpu)):
+                  self.completed_trips.append((int(ids_cpu[i]), float(starts_cpu[i]), end_t, 1))
 
     def _update_lane_changes(self):
         """

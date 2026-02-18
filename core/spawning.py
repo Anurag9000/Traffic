@@ -40,18 +40,19 @@ class Spawner:
     def __init__(
         self,
         mode: str = 'uniform',
-        mean_rate: float = 1.0,
-        variation: float = 0.2,
+        mean_rate: float = 0.5, # Changed default from 1.0 to 0.5
+        variation: float = 0.0, # Changed default from 0.2 to 0.0
         dt: float = 0.1,
         seed: int = 42,
-        # Targeted mode
-        lane_map: Optional[LaneMap] = None,
-        target_ratio: float = 0.5,
-        targets: Optional[List[Tuple[float, float]]] = None,
+        # Targeted mode (removed from signature as per user's diff, but kept for context)
+        # lane_map: Optional[LaneMap] = None,
+        # target_ratio: float = 0.5,
+        # targets: Optional[List[Tuple[float, float]]] = None,
         # Directional mode
-        lane_biases: Optional[Dict[int, float]] = None,
-        # Lambda decay (time-varying spawn rates)
-        lambda_decay: Optional[Dict] = None,
+        lane_biases: Optional[Dict[int, float]] = None, # Reordered and made Optional
+        type_weights: List[float] = [0.7, 0.1, 0.1, 0.1], # Car, Bike, Tempo, Truck
+        # Lambda decay (time-varying spawn rates) (removed from signature as per user's diff)
+        # lambda_decay: Optional[Dict] = None,
     ):
         # Validate mode
         valid_modes = {'uniform', 'targeted', 'directional'}
@@ -59,7 +60,7 @@ class Spawner:
             raise ValueError(f"Invalid mode '{mode}'. Must be one of {valid_modes}")
         
         self.mode = mode
-        self.mean = mean_rate
+        self.mean = mean_rate # Original was self.mean, user's diff has self.mean_rate. Keeping self.mean for consistency with get_current_rate.
         self.var = variation
         self.dt = dt
         
@@ -148,7 +149,7 @@ class Spawner:
             engine: TrafficEngine instance
         
         Returns:
-            Number of vehicles spawned
+            Number of vehicles successfully spawned
         """
         if not entry_lane_ids:
             return 0
@@ -156,53 +157,101 @@ class Spawner:
         # Update current time for lambda decay
         self.current_time += self.dt
         
-        # Dispatch to appropriate spawning strategy
+        # 1. Calculate New Demand
+        new_vehicles = 0
         if self.mode == 'uniform':
-            return self._spawn_uniform(entry_lane_ids, engine)
+            new_vehicles = self._calculate_uniform_demand(entry_lane_ids)
         elif self.mode == 'targeted':
-            return self._spawn_targeted(entry_lane_ids, engine)
+            new_vehicles = self._calculate_targeted_demand(entry_lane_ids) # Placeholder
+            pass # TODO: targeted impl
         elif self.mode == 'directional':
-            return self._spawn_directional(entry_lane_ids, engine)
+            new_vehicles = self._calculate_directional_demand(entry_lane_ids) # Placeholder
+            pass
+            
+        # For now, default to uniform demand calc usage if not overridden
+        # But wait, original code did _spawn_uniform which DID the spawning.
+        # We need to separate Demand Gen from Spawning.
+        
+        # Refactoring to preserve existing logic structure but add backlog:
+        # Since _spawn_XX methods currently do "calc + spawn", we need to wrap them?
+        # Or better: Just let them try to spawn, and if they fail, we add to backlog?
+        # But _spawn methods assume they can try?
+        
+        # Let's modify the Dispatch:
+        spawned_count = 0
+        if self.mode == 'uniform':
+            spawned_count = self._spawn_uniform(entry_lane_ids, engine)
+        elif self.mode == 'targeted':
+            spawned_count = self._spawn_targeted(entry_lane_ids, engine)
+        elif self.mode == 'directional':
+            spawned_count = self._spawn_directional(entry_lane_ids, engine)
+            
+        return spawned_count
+
+    # Helper to calculate demand (extracted from _spawn_uniform logic)
+    # Actually, modifying _spawn_uniform is safer.
+
     
     def _spawn_uniform(self, entry_lane_ids: List[int], engine) -> int:
-        """Standard Poisson spawning with uniform rate (supports lambda decay)."""
-        # Get current rate (may vary with time if lambda decay is enabled)
+        """Standard Poisson spawning with uniform rate + Backlog handling."""
+        # 1. New Demand Generation
         base_rate = self.get_current_rate()
         
-        # Sample rate for this step with ±variation
+        # Sample rate
         low = base_rate * (1.0 - self.var)
         high = base_rate * (1.0 + self.var)
         current_rate = self.rng.uniform(low, high)
         
-        # Probability = Rate * dt
+        # Probability = Rate * dt (Rate is per lane per second? Yes)
         prob = current_rate * self.dt
         
-        # Determine which lanes spawn vehicles
         spawn_lanes = []
         for lid in entry_lane_ids:
             if self.rng.random() < prob:
                 spawn_lanes.append(lid)
         
-        count = len(spawn_lanes)
-        if count == 0:
-            return 0
+        # 2. Add to Backlog
+        if not hasattr(self, 'backlog'):
+            self.backlog = [] # List of lane_ids awaiting spawn
+            
+        self.backlog.extend(spawn_lanes)
         
-        # Create spawn data
-        pos = np.zeros(count, dtype=np.float32)
-        v_types = self.rng.choices(self.types, weights=self.weights, k=count)
-        
-        # Spawn vehicles
-        try:
-            engine.spawn_vehicles(
-                count=count,
-                lane_ids=np.array(spawn_lanes, dtype=np.int32),
-                positions=pos,
-                types=np.array(v_types, dtype=np.int32)
-            )
-            return count
-        except Exception as e:
-            print(f"WARNING: Spawn failed: {e}", file=sys.stderr)
+        if not self.backlog:
             return 0
+            
+        # 3. Attempt Spawn from Backlog
+        # Prepare arrays
+        count = len(self.backlog)
+        lane_ids = np.array(self.backlog, dtype=np.int32)
+        positions = np.zeros(count, dtype=np.float32) # Spawn at 0
+        
+        # Sample Types
+        v_types = self.rng.choices(self.types, weights=self.type_weights, k=count)
+        types = np.array(v_types, dtype=np.int32) 
+        
+        # Call Engine (returns boolean mask of successes)
+        success_mask = engine.spawn_vehicles(count, lane_ids, positions, types)
+        
+        # 4. Process Results
+        if success_mask is None: # Handle case if engine returns None (old version safety)
+             # Assume all success if None (should not happen with new engine)
+             self.backlog.clear()
+             spawned_count = count
+        else:
+            # Keep failures in backlog
+            # success_mask is boolean array matching input 'lane_ids'
+            failures = ~success_mask
+            
+            # Reconstruct backlog from failures
+            # Need to keep the lane_ids that failed
+            failed_lanes = lane_ids[failures].tolist()
+            spawned_count = np.sum(success_mask)
+            
+            self.backlog = failed_lanes
+        
+        self.period_spawn_count += spawned_count
+        self.total_spawn_count += spawned_count
+        return spawned_count
     
     def _spawn_targeted(self, entry_lane_ids: List[int], engine) -> int:
         """Spawn vehicles with destination targets."""

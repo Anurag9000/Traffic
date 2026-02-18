@@ -6,52 +6,82 @@ All operations are GPU-accelerated via the gpu module.
 """
 
 from core.gpu import xp
+import numpy as np
 
 
 def calculate_idm_vectorized(
-    v: 'xp.ndarray',
-    v_lead: 'xp.ndarray',
-    s: 'xp.ndarray',
-    v_max: 'xp.ndarray',
-    a_max: 'xp.ndarray',
-    b_comfort: 'xp.ndarray',
+    pos: np.ndarray,
+    v: np.ndarray,
+    lane_ids: np.ndarray,
+    lengths: np.ndarray,
+    v0: np.ndarray,     # Desired Speed (vector)
+    a: np.ndarray,      # Max Accel (vector)
+    b: np.ndarray,      # Comfort Decel (vector)
     delta: float = 4.0,
-    s0: float = 2.0,
-    T: float = 1.5
-) -> 'xp.ndarray':
+    T: float = 1.5,
+    dt: float = 0.1,
+    s0: float = 2.0
+) -> np.ndarray:
     """
-    Calculate IDM acceleration for all vehicles.
-    
-    Args:
-        v: Current velocities (m/s)
-        v_lead: Leader velocities (m/s)
-        s: Gaps to leaders (m)
-        v_max: Desired velocities (m/s)
-        a_max: Maximum accelerations (m/s²)
-        b_comfort: Comfortable decelerations (m/s²)
-        delta: Acceleration exponent (default 4.0)
-        s0: Minimum gap (m, default 2.0)
-        T: Time headway (s, default 1.5)
-    
-    Returns:
-        Accelerations (m/s²)
+    Vectorized Intelligent Driver Model (IDM) calculation.
     """
-    # Free-flow acceleration term
-    v_ratio = v / xp.maximum(v_max, 1e-6)
-    free_term = 1.0 - xp.power(v_ratio, delta)
+    n = len(pos)
+    if n == 0:
+        return np.array([])
+        
+    # 1. Identify Leaders (Assumes sorted by lane asc, pos desc)
+    # leader of i is i-1 IF same lane
+    # i=0 has no leader (in that sorted block) or we handle boundary.
     
-    # Interaction term
-    dv = v - v_lead
-    s_star = s0 + xp.maximum(0.0, v * T + (v * dv) / (2.0 * xp.sqrt(a_max * b_comfort)))
-    interaction_term = xp.power(s_star / xp.maximum(s, 1e-6), 2.0)
+    # Shift arrays to align leader with follower
+    leader_pos = np.roll(pos, 1) # leader is at i-1? No, roll moves last to first.
+    # If sorted descending pos:
+    # 0: Pos 100
+    # 1: Pos 90
+    # Leader of 1 is 0.
+    # So leader_pos[i] = pos[i-1].
+    # But pos[i-1] corresponds to index i-1.
+    # `np.roll(pos, 1)` moves [A, B, C] -> [C, A, B]. 
+    # Index 1 (B) gets A. Correct.
     
-    # Combined acceleration
-    accel = a_max * (free_term - interaction_term)
+    leader_v = np.roll(v, 1)
+    leader_len = np.roll(lengths, 1)
+    leader_lane = np.roll(lane_ids, 1)
     
-    # Bound acceleration to prevent extreme values
-    accel = xp.clip(accel, -b_comfort * 2.0, a_max)
+    # Valid Leader Mask: Same Lane
+    has_leader = (lane_ids == leader_lane)
+    # Prevent wrap-around (index 0 should not match index -1)
+    has_leader[0] = False
     
-    return accel
+    # 2. Gap (s)
+    # s = x_lead - x_own - l_lead
+    gap = leader_pos - pos - leader_len
+    gap = np.maximum(gap, 0.1) # Avoid zero/neg
+    
+    # 3. Approach Rate (delta_v)
+    # dv = v_own - v_lead
+    dv = v - leader_v
+    
+    # 4. Desired Gap (s_star)
+    # s* = s0 + vT + (v * dv) / (2 * sqrt(ab))
+    
+    term1 = s0 + (v * T)
+    term2 = (v * dv) / (2.0 * np.sqrt(a * b))
+    
+    s_star = term1 + term2
+    
+    # 5. Acceleration
+    # a * [1 - (v/v0)^delta - (s*/s)^2]
+    
+    free_road = 1.0 - (v / v0) ** delta
+    interaction = - (s_star / gap) ** 2
+    
+    # Only apply interaction if has_leader
+    interaction[~has_leader] = 0.0
+    
+    acc = a * (free_road + interaction)
+    
+    return acc
 
 
 def update_kinematics(

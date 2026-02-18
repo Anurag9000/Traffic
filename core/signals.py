@@ -140,6 +140,21 @@ class SignalControllerVector:
         self.ring1_at_barrier[:] = False
         self.ring2_at_barrier[:] = False
         
+        # FIXED MODE AUTO-DISTRIBUTION
+        # If in FIXED mode, ensure phases sum to cycle_time uniformly
+        if self.mode == MODE_FIXED:
+             # Lost Time = 20s (4 stages * 5s)
+             lost_time = 4.0 * (5.0) # 3+2
+             total_green = self.cycle_time - lost_time
+             # 4 Stages -> Equal Split
+             split_green = total_green / 4.0
+             
+             # Assign
+             self.phase_durations[:, 1] = self.phase_durations[:, 5] = split_green
+             self.phase_durations[:, 2] = self.phase_durations[:, 6] = split_green
+             self.phase_durations[:, 3] = self.phase_durations[:, 7] = split_green
+             self.phase_durations[:, 4] = self.phase_durations[:, 8] = split_green
+        
         self._apply_states()
 
     def update(self, dt: float, detector_counts: np.ndarray):
@@ -359,8 +374,13 @@ class SignalControllerVector:
             return
 
         # Total available green time per cycle (subtract lost time for yellow+red clearance)
-        # 8 phases × (yellow 3s + red_clearance 2s) = 40s lost time
-        total_green = self.cycle_time - 40.0
+        # 8 phases × (yellow 3s + red_clearance 2s) = 40s lost time (OLD BUGGY LOGIC)
+        # FIX 9: Correct Lost Time for Dual-Ring NEMA
+        # Rings run in parallel.
+        # Sequential Stages: (1+5) -> (2+6) -> (3+7) -> (4+8).
+        # Lost Time per Cycle = 4 Stages * (Yellow 3s + Red 2s) = 20.0s.
+        lost_time = 4.0 * (self.yellow_time + self.red_clearance)
+        total_green = self.cycle_time - lost_time
 
         # Proportional allocation — add small epsilon to prevent starvation
         raw_demands = np.array([p1_5_dem, p2_6_dem, p3_7_dem, p4_8_dem], dtype=np.float32)

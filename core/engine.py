@@ -30,6 +30,15 @@ NUM_COLS = 12
 
 SENSOR_RANGE = 50.0 
 
+# Vehicle Type Definitions
+# ID: (Length, MaxSpeed, Accel, Decel)
+VEHICLE_PARAMS = {
+    0: (5.0, 30.0, 2.5, 4.0),  # Car
+    1: (2.0, 20.0, 3.5, 5.0),  # Bike (Agile)
+    2: (6.0, 25.0, 2.0, 3.0),  # Tempo
+    3: (10.0, 18.0, 1.5, 2.0), # Truck (Sluggish)
+} 
+
 class TrafficEngine:
     def __init__(self, lane_map: LaneMap, signals: SignalControllerVector = None, max_vehicles: int = 10000, dt: float = 0.1):
         self.map = lane_map 
@@ -45,6 +54,12 @@ class TrafficEngine:
         # Aux Arrays
         self.lengths = np.zeros(max_vehicles, dtype=np.float32) 
         self.max_speeds = np.zeros(max_vehicles, dtype=np.float32)
+        # Fix 6: Heterogeneous Physics Arrays
+        self.acc_max = np.zeros(max_vehicles, dtype=np.float32)
+        self.dec_comf = np.zeros(max_vehicles, dtype=np.float32)
+        # Fix 6: Heterogeneous Physics Arrays
+        self.acc_max = np.zeros(max_vehicles, dtype=np.float32)
+        self.dec_comf = np.zeros(max_vehicles, dtype=np.float32)
         
         self.next_id = 1
         
@@ -102,19 +117,29 @@ class TrafficEngine:
             # All blocked
             return
 
+        if not valid_indices:
+            # All blocked
+            return np.zeros(count, dtype=bool) # Return mask of failures
+
         # Subset
-        valid_indices = np.array(valid_indices, dtype=int)
-        count = len(valid_indices)
-        lane_ids = lane_ids[valid_indices]
-        positions = positions[valid_indices]
-        types = types[valid_indices]
+        valid_indices_arr = np.array(valid_indices, dtype=int)
+        
+        # Create Success Mask (Original Size)
+        success_mask = np.zeros(count, dtype=bool)
+        success_mask[valid_indices_arr] = True
+        
+        spawn_count = len(valid_indices)
+        
+        lane_ids = lane_ids[valid_indices_arr]
+        positions = positions[valid_indices_arr]
+        types = types[valid_indices_arr]
         if has_targets:
-            targets = targets[valid_indices]
+            targets = targets[valid_indices_arr]
             
-        end_idx = start_idx + count
+        end_idx = start_idx + spawn_count
         indices = np.arange(start_idx, end_idx)
         
-        self.vehicles[indices, IDX_ID] = np.arange(self.next_id, self.next_id + count)
+        self.vehicles[indices, IDX_ID] = np.arange(self.next_id, self.next_id + spawn_count)
         self.vehicles[indices, IDX_LANE_ID] = lane_ids
         self.vehicles[indices, IDX_POS_ON_LANE] = positions
         self.vehicles[indices, IDX_TYPE_ID] = types
@@ -130,11 +155,53 @@ class TrafficEngine:
             self.vehicles[indices, IDX_TARGET_X] = -1.0
             self.vehicles[indices, IDX_TARGET_Y] = -1.0
         
-        self.lengths[indices] = 5.0 
-        self.max_speeds[indices] = 30.0 
+        # Fix 6: Assign Params by Type
+        # Vectorized assignment? types is ndarray.
+        # Lookup params. Since types are small ints (0-3), we can use indexing.
+        # But Cupy doesn't support dict lookup easily.
+        # We'll map on CPU or use Choose.
         
-        self.active_count += count
-        self.next_id += count
+        # Assumption: types is on same device as vehicle arrays?
+        # If types is cupy, we use cp.take or similar.
+        # For simplicity/speed in Python loop of spawn (rare):
+        # We can iterate or use mask.
+        
+        # Define arrays for params
+        p_len = np.zeros(count, dtype=np.float32)
+        p_vmax = np.zeros(count, dtype=np.float32)
+        p_acc = np.zeros(count, dtype=np.float32)
+        p_dec = np.zeros(count, dtype=np.float32)
+        
+        # If types is cupy array, convert to numpy for dict lookup?
+        # Or use np.choose if types are 0..3
+        # Let's assume types 0..3
+        
+        # Safe Mapping
+        # Default Car (0)
+        p_len[:] = 5.0
+        p_vmax[:] = 30.0
+        p_acc[:] = 2.5
+        p_dec[:] = 4.0
+        
+        # Apply Masks
+        # This is generic for any backend
+        for tid, (l, v, a, d) in VEHICLE_PARAMS.items():
+            mask = (types == tid)
+            if np.any(mask):
+                p_len[mask] = l
+                p_vmax[mask] = v
+                p_acc[mask] = a
+                p_dec[mask] = d
+
+        self.lengths[indices] = p_len
+        self.max_speeds[indices] = p_vmax
+        self.acc_max[indices] = p_acc
+        self.dec_comf[indices] = p_dec 
+        
+        self.active_count += spawn_count
+        self.next_id += spawn_count
+        
+        return success_mask
         
     def step(self):
         self.current_time += self.dt
@@ -149,40 +216,80 @@ class TrafficEngine:
         active_vehicles = self.vehicles[:n]
         active_lengths = self.lengths[:n]
         active_max_speeds = self.max_speeds[:n]
+        # Fix 5: Lateral Logic (Lane Changing)
+        # Periodic check for lane changes (e.g. every 1.0s)
+        # Using simple tick modulo check
+        if int(self.current_time * 10) % 10 == 0:
+             self._update_lane_changes()
         
-        # 1. Sort Step
-        lane_ids = active_vehicles[:, IDX_LANE_ID].astype(int)
-        positions = active_vehicles[:, IDX_POS_ON_LANE]
+        # 1. Spawn logic is external (handled by Spawner)
         
-        # CuPy requires array input for lexsort, not tuple
-        sort_keys = np.vstack((-positions, lane_ids))
-        sort_indices = np.lexsort(sort_keys)
+        # 2. Update existing vehicles
+        if self.active_count == 0:
+            if self.signals:
+                dummy_counts = np.zeros((self.signals.num_nodes, self.signals.num_phases + 1), dtype=np.int32)
+                self.signals.update(self.dt, dummy_counts)
+            return
+
+        n = self.active_count
         
-        sorted_vehicles = active_vehicles[sort_indices]
-        sorted_lengths = active_lengths[sort_indices]
-        sorted_max_speeds = active_max_speeds[sort_indices]
+        # Snapshot state for vectorized ops
+        # We work on a copy or slice? 
+        # For sorting, we need to reorder the internal arrays.
         
-        v = sorted_vehicles[:, IDX_VEL]
+        # 3. Sort vehicles by lane and position (Critical for IDM)
+        # Combine lane (int) and pos (float) for lexsort
+        # We want to sort by LANE first, then POSITION (descending? No, leading car has higher pos)
+        # IDM needs list from back to front or front to back?
+        # Standard IDM calc assumes we can find 'leader'.
+        # If sorted by pos descending: index i is leader of i+1.
+        
+        keys = (self.vehicles[:n, IDX_POS_ON_LANE], self.vehicles[:n, IDX_LANE_ID])
+        # lexsort sorts by last key first. So Lane, then Pos.
+        # Default is ascending.
+        # We want Lane Ascent, Pos Dscent? 
+        # keys = (-pos, lane) works.
+        
+        indices = np.lexsort((-self.vehicles[:n, IDX_POS_ON_LANE], self.vehicles[:n, IDX_LANE_ID]))
+        
+        sorted_vehicles = self.vehicles[indices]
+        sorted_lengths = self.lengths[indices]
+        sorted_max_speeds = self.max_speeds[indices]
+        sorted_acc = self.acc_max[indices]
+        sorted_dec = self.dec_comf[indices]
+        
+        # 4. IDM (Physics) - Now Heterogeneous
+        lane_ids = sorted_vehicles[:, IDX_LANE_ID].astype(int)
         pos = sorted_vehicles[:, IDX_POS_ON_LANE]
-        lane = sorted_vehicles[:, IDX_LANE_ID].astype(int)
+        v = sorted_vehicles[:, IDX_VEL]
         
-        # 2. Identify Leaders & Followers
-        v_leader = np.roll(v, 1)
-        pos_leader = np.roll(pos, 1)
-        len_leader = np.roll(sorted_lengths, 1)
-        lane_leader = np.roll(lane, 1)
+        acc = calculate_idm_vectorized(
+            pos, v, lane_ids, 
+            sorted_lengths, 
+            sorted_max_speeds, 
+            sorted_acc, 
+            sorted_dec, 
+            delta=4.0, T=1.5, dt=self.dt
+        )
         
-        # 3. Gaps
-        raw_gap = pos_leader - pos - len_leader
-        valid_leader_mask = (lane == lane_leader)
-        gaps = np.where(valid_leader_mask, raw_gap, 1000.0)
-        actual_v_leader = np.where(valid_leader_mask, v_leader, 0.0)
+        # 5. Signal Compliance
+        # Use pre-sorted arrays
+        lane_ids = sorted_vehicles[:, IDX_LANE_ID].astype(int)
+        pos = sorted_vehicles[:, IDX_POS_ON_LANE]
+        v = sorted_vehicles[:, IDX_VEL]
         
-        # 4. IDM
-        # IDM parameters (standard values)
-        a_max = 2.0  # max acceleration (m/s^2)
-        b_comfort = 3.0  # comfortable deceleration (m/s^2)
-        acc = calculate_idm_vectorized(v, actual_v_leader, gaps, sorted_max_speeds, a_max, b_comfort)
+        # Calculate IDM
+        acc = calculate_idm_vectorized(
+            pos, v, lane_ids, 
+            sorted_lengths, 
+            sorted_max_speeds,         # Use per-vehicle max speed
+            sorted_acc,                # Use per-vehicle accel
+            sorted_dec,                # Use per-vehicle decel
+            actual_v_leader, gaps,
+            delta=4.0, 
+            T=1.5, 
+            dt=self.dt
+        )
         
         # 5. SIGNAL LOGIC
         if self.signals:
@@ -273,6 +380,8 @@ class TrafficEngine:
         self.vehicles[:n] = sorted_vehicles
         self.lengths[:n] = sorted_lengths
         self.max_speeds[:n] = sorted_max_speeds
+        self.acc_max[:n] = sorted_acc
+        self.dec_comf[:n] = sorted_dec
         
         # 10. Compact (Garbage Collect Inactive Vehicles)
         self._compact_vehicles()
@@ -293,12 +402,20 @@ class TrafficEngine:
             if new_count > 0:
                 self.vehicles[:new_count] = self.vehicles[valid_indices]
                 self.lengths[:new_count] = self.lengths[valid_indices]
+                self.vehicles[:new_count] = self.vehicles[valid_indices]
+                self.lengths[:new_count] = self.lengths[valid_indices]
                 self.max_speeds[:new_count] = self.max_speeds[valid_indices]
+                self.acc_max[:new_count] = self.acc_max[valid_indices]
+                self.dec_comf[:new_count] = self.dec_comf[valid_indices]
             
             # Reset the inactive part of the array
             self.vehicles[new_count:self.active_count] = 0
             self.lengths[new_count:self.active_count] = 0
             self.max_speeds[new_count:self.active_count] = 0
+            self.acc_max[new_count:self.active_count] = 0
+            self.dec_comf[new_count:self.active_count] = 0
+            self.acc_max[new_count:self.active_count] = 0
+            self.dec_comf[new_count:self.active_count] = 0
             
             self.active_count = new_count
         
@@ -433,5 +550,76 @@ class TrafficEngine:
                 end_t = self.current_time
                 self.completed_trips.append((v_id, start_t, end_t, 1))
 
-    def get_snapshot(self):
-        return self.vehicles[:self.active_count].copy()
+    def _update_lane_changes(self):
+        """
+        Execute lateral lane changes.
+        Assumption: 3-Lane Topology (0=Left, 1=Center, 2=Right per edge).
+        Adjacent lanes are ID +/- 1.
+        """
+        if self.active_count == 0:
+            return
+            
+        vehicles = self.vehicles[:self.active_count]
+        lane_ids = vehicles[:, IDX_LANE_ID].astype(int)
+        pos = vehicles[:, IDX_POS_ON_LANE]
+        vs = vehicles[:, IDX_VEL]
+        v_maxs = self.max_speeds[:self.active_count]
+        
+        # Motivation: Moving slow (< 50% max speed)
+        impatience_mask = (vs < (v_maxs * 0.5))
+        candidates = np.where(impatience_mask)[0]
+        
+        if len(candidates) == 0:
+            return
+
+        # Shuffle candidates to prevent bias
+        # np.random.shuffle(candidates) # In-place shuffle not supported on cupy slice?
+        
+        # Limit processing
+        candidates = candidates[:50] # Check max 50 cars per tick for performance
+        
+        for idx in candidates:
+            lid = int(lane_ids[idx])
+            p = pos[idx]
+            
+            # Determine Neighbors
+            # 0->1, 1->0/2, 2->1
+            # Check Edge ID consistency: (lid // 3) should match neighbor
+            edge_id = lid // 3
+            
+            options = []
+            if lid % 3 == 0: # Left Lane (India LHT?) No, usually 0 is left. 
+                # Can move Right (1)
+                options.append(lid + 1)
+            elif lid % 3 == 1: # Center
+                options.append(lid - 1) # Left
+                options.append(lid + 1) # Right
+            elif lid % 3 == 2: # Right
+                options.append(lid - 1) # Left
+                
+            # Filter valid options within same edge
+            valid_opts = [o for o in options if (o // 3) == edge_id]
+            
+            if not valid_opts:
+                continue
+                
+            target_lane = random.choice(valid_opts)
+            
+            # Check Gap Safety
+            # Is target_lane safe at pos p?
+            # Check range [p - 10, p + 10]
+            # O(N) scan -> Slow. 
+            # Use 'lane_ids' mask on ALL vehicles.
+            
+            mask = (lane_ids == target_lane)
+            neighbor_pos = pos[mask]
+            
+            # Distances
+            dists = np.abs(neighbor_pos - p)
+            if np.any(dists < 10.0): # 10m safe gap
+                continue # Unsafe
+                
+            # Execute Change
+            vehicles[idx, IDX_LANE_ID] = target_lane
+            # Add small penalty?
+            vehicles[idx, IDX_VEL] *= 0.9 # Slight deviation speed loss

@@ -296,7 +296,23 @@ class TrafficEngine:
                         best_next_lane = random.choice(candidates)
             else:
                 # Random Walk (Default)
-                best_next_lane = next_opts[0]
+                # Filter valid options manually (CuPy scalar -> Python int conversion happens implicitly in iteration?)
+                # next_opts is a CuPy array if self.map.adjacency is on GPU?
+                # core/engine.py imports xp as np.
+                # If np is numpy, it works. If cupy, iterating is slow but works.
+                # Note: next_opts = self.map.adjacency[int(current_lane)] was retrieved earlier.
+                
+                valid_opts = []
+                for l in next_opts:
+                    if l != -1:
+                        valid_opts.append(l)
+                    else:
+                        break # Optimization: -1 are usually at the end
+                
+                if valid_opts:
+                    best_next_lane = random.choice(valid_opts)
+                else:
+                    best_next_lane = -1
             
             next_lane = best_next_lane
             

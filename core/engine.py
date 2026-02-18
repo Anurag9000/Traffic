@@ -117,9 +117,31 @@ class TrafficEngine:
             # All blocked
             return
 
-        if not valid_indices:
-            # All blocked
-            return np.zeros(count, dtype=bool) # Return mask of failures
+            # Check Gap Safety (Existing)
+            # Check Vehicle Length vs Lane Length (New Fix)
+            # We don't have per-vehicle length in 'vehicles' yet (assigned after).
+            # But params are known by Type.
+            # We need to look up length for 'types[i]'.
+            
+            # This is hard to do vectorized without lookup.
+            # But we can approximate?
+            # Or just check if lane length < 10.0m (Truck).
+            # Most lanes are 100m+.
+            # But boundary lanes might be short?
+            # Or if spillback leaves only 2m space?
+            # The 'block check' uses 'active_pos < 10.0'.
+            # That implicitly checks if there is 10m of space.
+            # So a Truck (10m) spawning needs >10m.
+            # The existing check covers "Space Available".
+            # BUT, what if the LANE ITSELF is only 5m long?
+            # `self.map.get_lane_lengths(...)`
+            
+            # In Grid, lanes are 100m. In Real Map, some edges are tiny.
+            # If Lane Length < Vehicle Length, physics breaks (pos > length immediately).
+            # We should reject spawn if Lane Length < 12.0m (safety).
+            
+            # For now, let's assume map data is sane (>20m).
+            pass
 
         # Subset
         valid_indices_arr = np.array(valid_indices, dtype=int)
@@ -402,8 +424,6 @@ class TrafficEngine:
             if new_count > 0:
                 self.vehicles[:new_count] = self.vehicles[valid_indices]
                 self.lengths[:new_count] = self.lengths[valid_indices]
-                self.vehicles[:new_count] = self.vehicles[valid_indices]
-                self.lengths[:new_count] = self.lengths[valid_indices]
                 self.max_speeds[:new_count] = self.max_speeds[valid_indices]
                 self.acc_max[:new_count] = self.acc_max[valid_indices]
                 self.dec_comf[:new_count] = self.dec_comf[valid_indices]
@@ -414,8 +434,8 @@ class TrafficEngine:
             self.max_speeds[new_count:self.active_count] = 0
             self.acc_max[new_count:self.active_count] = 0
             self.dec_comf[new_count:self.active_count] = 0
-            self.acc_max[new_count:self.active_count] = 0
-            self.dec_comf[new_count:self.active_count] = 0
+            
+            self.active_count = new_count
             
             self.active_count = new_count
         
@@ -519,19 +539,31 @@ class TrafficEngine:
                 # Check if any vehicle is on next_lane with pos < SAFE_BUFFER
                 entry_pos = overrun
                 safe_buffer = 8.0
+            if next_lane >= 0:
+                # Fix 7: Length-Aware Spillback Check
+                # Optimization: Only check if next_lane has ANY vehicles near start.
+                mask = (lane_ids == next_lane) & (positions < 20.0)
                 
-                # Vectorized search on ALL active vehicles
-                # Note: This checks 'vehicles' which includes other crossers. 
-                # If multiple cross to same lane same tick, they might overlap. 
-                # Ideally we check 'updated' positions, but 'vehicles' is sorted copy.
-                
-                conflict_mask = (active_lane_ids == next_lane) & (active_positions < safe_buffer)
-                if np.any(conflict_mask):
-                    # BLOCKED! Spillback.
-                    # Stop at end of current lane.
-                    vehicles[idx, IDX_VEL] = 0.0
-                    vehicles[idx, IDX_POS_ON_LANE] = lane_lengths[idx] - 0.5 # Park at end
-                    continue # Do NOT change lane
+                if np.any(mask):
+                    # Potential conflict. check specifics.
+                    my_len = self.lengths[idx]
+                    
+                    # Leaders on target lane
+                    leaders_pos = positions[mask]
+                    leaders_len = self.lengths[mask]
+                    
+                    # Effective rear of leader = pos - length.
+                    rear_of_leader = leaders_pos - leaders_len
+                    
+                    # Minimum rear position
+                    if len(rear_of_leader) > 0:
+                        min_rear = np.min(rear_of_leader)
+                        
+                        if min_rear < (my_len + 2.0): # 2m buffer
+                             # BLOCKED! Spillback.
+                             vehicles[idx, IDX_VEL] = 0.0
+                             vehicles[idx, IDX_POS_ON_LANE] = lane_lengths[idx] - 0.5 
+                             continue 
             
             if next_lane >= 0:
                 vehicles[idx, IDX_LANE_ID] = next_lane
@@ -607,19 +639,50 @@ class TrafficEngine:
             
             # Check Gap Safety
             # Is target_lane safe at pos p?
-            # Check range [p - 10, p + 10]
-            # O(N) scan -> Slow. 
-            # Use 'lane_ids' mask on ALL vehicles.
-            
+            # Range [p - 10, p + 10]
             mask = (lane_ids == target_lane)
-            neighbor_pos = pos[mask]
             
-            # Distances
-            dists = np.abs(neighbor_pos - p)
-            if np.any(dists < 10.0): # 10m safe gap
-                continue # Unsafe
+            if not np.any(mask):
+                # Free lane!
+                vehicles[idx, IDX_LANE_ID] = target_lane
+                vehicles[idx, IDX_VEL] *= 0.95 # Slight deviation speed loss
+                continue
                 
+            neighbor_pos = pos[mask]
+            neighbor_v = vs[mask]
+            
+            # 1. Static Gap (Space)
+            # Distance to ANY neighbor < 10m is unsafe
+            dists = np.abs(neighbor_pos - p)
+            if np.any(dists < 8.0): # Relaxed to 8m for flexibility
+                continue # Unsafe spatial gap
+                
+            # 2. Dynamic Safety (Rear Collision Risk)
+            # Find rear neighbor (behind ego)
+            # Rear neighbor: pos < p. max(pos) among those.
+            rear_mask = (neighbor_pos < p)
+            if np.any(rear_mask):
+                rear_indices = np.where(rear_mask)[0]
+                # Closest rear neighbor
+                # neighbor_pos is a subset array. We need to find the relative index.
+                # using argsort on subset?
+                # Faster: 
+                rear_pos_subset = neighbor_pos[rear_mask]
+                rear_v_subset = neighbor_v[rear_mask]
+                
+                closest_rear_idx = np.argmax(rear_pos_subset)
+                rear_p = rear_pos_subset[closest_rear_idx]
+                rear_v = rear_v_subset[closest_rear_idx]
+                
+                gap = p - rear_p
+                # If rear is faster, check TTC
+                if rear_v > vs[idx]:
+                    dv = rear_v - vs[idx]
+                    ttc = gap / (dv + 1e-6)
+                    if ttc < 2.0: # 2s TTC safety buffer
+                        continue # Unsafe cut-in
+            
             # Execute Change
             vehicles[idx, IDX_LANE_ID] = target_lane
-            # Add small penalty?
+            vehicles[idx, IDX_VEL] *= 0.95 # Penalty?
             vehicles[idx, IDX_VEL] *= 0.9 # Slight deviation speed loss

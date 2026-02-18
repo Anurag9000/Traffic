@@ -113,9 +113,39 @@ class RealTrafficNetwork:
         for u, v, k in self.G.edges(keys=True):
             base_lid = self.adapter.get_lane_id(u, v, k)
             if base_lid != -1:
-                v_idx = self.node_to_idx[v]
-                # Phase Assignment Heuristic: Random valid phase for compliance demo
-                phase = (hash((u,v)) % 4) * 2 + 2 
+                # Phase Assignment Heuristic: Geometric (NEMA Standard)
+                # We need coordinates of u and v.
+                # Nodes are stored in self.G.nodes[n]
+                u_data = self.G.nodes[u]
+                v_data = self.G.nodes[v]
+                
+                ux, uy = float(u_data.get('x',0)), float(u_data.get('y',0))
+                vx, vy = float(v_data.get('x',0)), float(v_data.get('y',0))
+                
+                dx = vx - ux
+                dy = vy - uy
+                
+                # Determine cardinal direction of the EDGE (Movement)
+                # Angle in degrees. 0 = East, 90 = North.
+                angle = np.degrees(np.arctan2(dy, dx))
+                if angle < 0: angle += 360
+                
+                # Map to Phases (NEMA Standard)
+                # EB (Eastbound, 315-45 deg) -> Phase 4
+                # NB (Northbound, 45-135 deg) -> Phase 2
+                # WB (Westbound, 135-225 deg) -> Phase 8
+                # SB (Southbound, 225-315 deg) -> Phase 6
+                
+                phase = 2 # Default NB
+                
+                if (angle >= 315) or (angle < 45): # Eastbound
+                    phase = 4
+                elif (angle >= 45) and (angle < 135): # Northbound
+                    phase = 2
+                elif (angle >= 135) and (angle < 225): # Westbound
+                    phase = 8
+                elif (angle >= 225) and (angle < 315): # Southbound
+                    phase = 6
                 
                 # Apply Phase
                 if self.adapter.force_uniform_lanes:

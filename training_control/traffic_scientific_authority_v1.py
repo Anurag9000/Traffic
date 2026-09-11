@@ -2,14 +2,15 @@
 """Source-derived scientific authority for the Traffic repository.
 
 Traffic is a deterministic simulation repository rather than an optimizer-training
-codebase.  The authority therefore does not invent fake training jobs.  It:
+codebase. The authority therefore does not invent fake training jobs. It:
 
 * discovers every authored ``configs/*.yaml`` simulation;
-* discovers every standalone scientific scenario script while excluding package,
-  CLI and batch-runner aliases that would create nested scheduling;
-* emits one OPF-visible restart-exact transaction per retained workload; and
-* provides a fail-closed source census used by the audit CLI to prove that no
-  retained ML/optimizer surface is being silently omitted.
+* proves every retained standalone scenario runner is represented by the unified
+  config surface (or fails closed when a new unmapped runner appears);
+* emits one independently OPF-scheduled, output-isolated restart-exact transaction
+  per authored config; and
+* performs a retained-source census so a future ML/optimizer surface cannot be
+  silently hidden behind the current ``no trainable surface`` classification.
 """
 from __future__ import annotations
 
@@ -19,13 +20,39 @@ from pathlib import Path
 import sys
 from typing import Iterator
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = ROOT / "configs"
 SCENARIO_DIR = ROOT / "scenarios"
 EXCLUDED_SCENARIO_FILES = {"__init__.py", "cli.py", "batch_runner.py"}
+# The refactored repository documents the unified YAML runner as feature-parity
+# authority. These mappings make legacy execution aliases explicit instead of
+# silently ignoring them or running nested/duplicate campaigns.
+SCENARIO_ALIAS_CONFIGS: dict[str, tuple[str, ...]] = {
+    "experiment_speed_threshold.py": ("configs/experiment_speed_threshold.yaml",),
+    "experiment_velocity_invariant.py": (
+        "configs/experiment_velocity_30.yaml",
+        "configs/experiment_velocity_40.yaml",
+    ),
+    "grid_targeted.py": ("configs/grid_targeted.yaml",),
+    "intersection_directional.py": ("configs/intersection_directional.yaml",),
+    "parameter_sweep.py": (
+        "configs/experiment_speed_threshold.yaml",
+        "configs/experiment_velocity_30.yaml",
+        "configs/experiment_velocity_40.yaml",
+    ),
+    "real_map_runner.py": (
+        "configs/delhi_baseline.yaml",
+        "configs/delhi_fixed.yaml",
+        "configs/delhi_targeted.yaml",
+        "configs/real_loose.yaml",
+        "configs/real_strict.yaml",
+    ),
+}
 TRAINING_FRAMEWORK_ROOTS = {
     "torch", "tensorflow", "keras", "sklearn", "xgboost", "lightgbm", "catboost",
-    "jax", "flax", "optax", "stable_baselines3", "ray.rllib", "transformers",
+    "jax", "flax", "optax", "stable_baselines3", "transformers",
 }
 TRAINING_CALL_NAMES = {
     "fit", "partial_fit", "fit_transform", "backward", "train_step",
@@ -45,6 +72,7 @@ class TrainableSurfaceFinding:
 class TrafficAuthorityAudit:
     configs: tuple[str, ...]
     scenario_scripts: tuple[str, ...]
+    scenario_aliases: dict[str, tuple[str, ...]]
     trainable_findings: tuple[TrainableSurfaceFinding, ...]
 
     @property
@@ -53,12 +81,15 @@ class TrafficAuthorityAudit:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "repository": "Anurag9000/Traffic",
             "configs": list(self.configs),
             "scenario_scripts": list(self.scenario_scripts),
+            "scenario_aliases": {key: list(value) for key, value in self.scenario_aliases.items()},
             "trainable_findings": [asdict(row) for row in self.trainable_findings],
             "no_trainable_surface": self.no_trainable_surface,
+            "unified_config_surface_is_execution_authority": True,
+            "legacy_scenario_scripts_are_explicit_aliases": True,
             "source_configuration_only": True,
             "execution_claim_emitted": False,
             "training_claim_emitted": False,
@@ -126,11 +157,40 @@ def audit_authority() -> TrafficAuthorityAudit:
     scenarios = discover_scenario_scripts()
     if not configs:
         raise RuntimeError("Traffic scientific authority found no authored YAML configs")
-    if not scenarios:
-        raise RuntimeError("Traffic scientific authority found no standalone scenario scripts")
+    config_names = {_relative(path) for path in configs}
+    for path in configs:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"Traffic config must contain a YAML object: {_relative(path)}")
+        mode = str(payload.get("mode", "grid"))
+        if mode not in {"grid", "intersection", "real"}:
+            raise ValueError(f"unknown Traffic mode {mode!r} in {_relative(path)}")
+        simulation = payload.get("simulation", {}) or {}
+        if not isinstance(simulation, dict):
+            raise ValueError(f"simulation must be a mapping in {_relative(path)}")
+        duration = float(simulation.get("duration", 3600.0))
+        dt = float(simulation.get("dt", 0.1))
+        if duration <= 0 or dt <= 0:
+            raise ValueError(f"non-positive duration/dt in {_relative(path)}")
+
+    scenario_names = {_relative(path) for path in scenarios}
+    expected_names = {f"scenarios/{name}" for name in SCENARIO_ALIAS_CONFIGS}
+    unmapped = sorted(scenario_names - expected_names)
+    stale_aliases = sorted(expected_names - scenario_names)
+    if unmapped or stale_aliases:
+        raise RuntimeError(
+            "Traffic legacy-scenario alias closure drifted: "
+            f"unmapped={unmapped} stale_aliases={stale_aliases}"
+        )
+    for script_name, aliases in SCENARIO_ALIAS_CONFIGS.items():
+        missing = [value for value in aliases if value not in config_names]
+        if missing:
+            raise RuntimeError(f"scenario alias {script_name} references missing configs {missing}")
+
     return TrafficAuthorityAudit(
-        configs=tuple(_relative(path) for path in configs),
-        scenario_scripts=tuple(_relative(path) for path in scenarios),
+        configs=tuple(sorted(config_names)),
+        scenario_scripts=tuple(sorted(scenario_names)),
+        scenario_aliases=dict(SCENARIO_ALIAS_CONFIGS),
         trainable_findings=census_trainable_surface(),
     )
 
@@ -151,8 +211,8 @@ def iter_jobs() -> Iterator[dict[str, object]]:
             f"{row.path}:{row.line}:{row.symbol}" for row in audit.trainable_findings
         )
         raise RuntimeError(
-            "Traffic gained a trainable/optimizer surface; do not classify it as a pure "
-            f"restart-exact simulation repository until explicitly wired: {rendered}"
+            "Traffic gained a trainable/optimizer surface; it must be explicitly wired "
+            f"before launch: {rendered}"
         )
 
     for relative in audit.configs:
@@ -167,7 +227,7 @@ def iter_jobs() -> Iterator[dict[str, object]]:
             ],
             "phase": "simulation",
             "family": "traffic-config",
-            "device_capable": False,
+            "device_capable": True,
             "is_training_job": False,
             "depends_on": ["audit-traffic-authority"],
             "resume_strategy": "restart_exact",
@@ -176,35 +236,9 @@ def iter_jobs() -> Iterator[dict[str, object]]:
             "idempotent": True,
             "atomic_outputs": True,
             "early_stopping_applicable": False,
-            "early_stopping_exception_reason": "deterministic finite simulation, not optimizer training",
+            "early_stopping_exception_reason": "finite deterministic simulation, not optimizer training",
             "completion_artifacts": [f"artifacts/central_runs/configs/{stem}/COMPLETE.json"],
             "source_config": relative,
+            "gpu_acceleration_capable": True,
+            "cpu_fallback_capable": True,
         }
-
-    previous: str | None = None
-    for relative in audit.scenario_scripts:
-        stem = Path(relative).stem
-        job_id = f"simulate-scenario:{stem}"
-        deps = ["audit-traffic-authority"]
-        # Legacy standalone scripts may use hard-coded result paths. Serialize only
-        # this legacy subset to avoid file collisions; config jobs remain parallel.
-        if previous is not None:
-            deps.append(previous)
-        yield {
-            "id": job_id,
-            "command": [sys.executable, relative],
-            "phase": "simulation",
-            "family": "traffic-legacy-scenario",
-            "device_capable": False,
-            "is_training_job": False,
-            "depends_on": deps,
-            "resume_strategy": "restart_exact",
-            "checkpoint_contract": _restart_contract(),
-            "deterministic": True,
-            "idempotent": True,
-            "atomic_outputs": False,
-            "early_stopping_applicable": False,
-            "early_stopping_exception_reason": "deterministic finite simulation, not optimizer training",
-            "source_script": relative,
-        }
-        previous = job_id

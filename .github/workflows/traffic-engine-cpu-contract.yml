@@ -1,0 +1,32 @@
+name: Traffic engine CPU contract
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  cpu-simulation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      OPF_ADP_DISABLE_GPU_ACCELERATORS: "1"
+      CUDA_VISIBLE_DEVICES: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU-only test dependencies
+        run: python -m pip install numpy pytest
+      - name: Compile all first-party Python source
+        run: python - <<'PY'
+          import pathlib
+          import py_compile
+          for path in pathlib.Path('.').rglob('*.py'):
+              if any(part in {'.git', '.training_control', 'venv', '.venv', 'build', 'dist'} for part in path.parts):
+                  continue
+              py_compile.compile(str(path), doraise=True)
+          PY
+      - name: Run selected-backend simulation and parity contracts
+        run: python -m pytest -q tests/test_intersection_gpu_runtime.py tests/test_gpu_physics_contract.py

@@ -8,7 +8,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from core.gpu_utils import xp, USING_GPU, get_device_info, to_numpy, synchronize
+from core.gpu import xp, USING_GPU, get_device_info, to_numpy, synchronize
 import time
 
 def test_basic_operations():

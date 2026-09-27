@@ -91,3 +91,26 @@ def test_no_spawn_request_is_counted_as_success_when_engine_returns_none():
     assert spawner.step([0], NoCapacity()) == 0
     assert len(spawner.backlog) == 1
     assert spawner.total_spawn_count == 0
+
+
+def test_nonempty_intersection_traversal_reaches_outbound_and_completes():
+    sim = SingleIntersection(spawn_rate=0, lane_length=20.0)
+    accepted = sim.engine.spawn_vehicles(
+        1, np.array([0], dtype=np.int32),
+        np.array([0.0], dtype=np.float32),
+        np.array([0], dtype=np.int32),
+    )
+    assert to_numpy(accepted).tolist() == [True]
+    entered_outbound = False
+    for _ in range(1000):
+        sim.engine.step()
+        if sim.engine.active_count:
+            lane = int(to_numpy(sim.engine.vehicles[0:1, IDX_LANE_ID])[0])
+            entered_outbound |= lane >= 12
+        if sim.engine.completed_trips:
+            break
+    assert entered_outbound, "vehicle never traversed its inbound-to-outbound link"
+    assert len(sim.engine.completed_trips) == 1
+    assert sim.engine.active_count == 0
+    trip = sim.engine.completed_trips[0]
+    assert trip[2] > trip[1] >= 0

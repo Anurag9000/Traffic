@@ -28,6 +28,13 @@ def calculate_idm_vectorized(
     n = len(pos)
     if n == 0:
         return xp.array([])
+
+    # External callers may pass NumPy host arrays even when the simulator
+    # selected CuPy. Normalize all seven operands once; never rely on mixed
+    # NumPy/CuPy broadcasting or implicit host transfers in the IDM equation.
+    pos, v, lane_ids, lengths, v0, a, b = (
+        xp.asarray(field) for field in (pos, v, lane_ids, lengths, v0, a, b)
+    )
         
     # 1. Identify Leaders (Assumes sorted by lane asc, pos desc)
     # leader of i is i-1 IF same lane
@@ -102,6 +109,11 @@ def update_kinematics(
     Returns:
         (new_positions, new_velocities)
     """
+    # Preserve the selected numerical backend for NumPy-origin caller inputs.
+    positions, velocities, accelerations = (
+        xp.asarray(field) for field in (positions, velocities, accelerations)
+    )
+
     # Update velocities
     new_velocities = velocities + accelerations * dt
     new_velocities = xp.maximum(new_velocities, 0.0)  # No negative speeds

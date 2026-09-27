@@ -128,32 +128,6 @@ class TrafficEngine:
         # the spawner can retry requests that exceeded capacity.
         valid_indices = valid_indices[:capacity]
 
-            # Check Gap Safety (Existing)
-            # Check Vehicle Length vs Lane Length (New Fix)
-            # We don't have per-vehicle length in 'vehicles' yet (assigned after).
-            # But params are known by Type.
-            # We need to look up length for 'types[i]'.
-            
-            # This is hard to do vectorized without lookup.
-            # But we can approximate?
-            # Or just check if lane length < 10.0m (Truck).
-            # Most lanes are 100m+.
-            # But boundary lanes might be short?
-            # Or if spillback leaves only 2m space?
-            # The 'block check' uses 'active_pos < 10.0'.
-            # That implicitly checks if there is 10m of space.
-            # So a Truck (10m) spawning needs >10m.
-            # The existing check covers "Space Available".
-            # BUT, what if the LANE ITSELF is only 5m long?
-            # `self.map.get_lane_lengths(...)`
-            
-            # In Grid, lanes are 100m. In Real Map, some edges are tiny.
-            # If Lane Length < Vehicle Length, physics breaks (pos > length immediately).
-            # We should reject spawn if Lane Length < 12.0m (safety).
-            
-            # For now, let's assume map data is sane (>20m).
-            pass
-
         # Subset
         valid_indices_arr = np.array(valid_indices, dtype=int)
         

@@ -335,18 +335,7 @@ class TrafficEngine:
         
         v = sorted_vehicles[:, IDX_VEL]
         
-        # Calculate IDM
-        acc = calculate_idm_vectorized(
-            pos, v, lane_ids, 
-            sorted_lengths, 
-            sorted_max_speeds,         # Use per-vehicle max speed
-            sorted_acc,                # Use per-vehicle accel
-            sorted_dec,                # Use per-vehicle decel
-            actual_v_leader, gaps,
-            delta=4.0, 
-            T=1.5, 
-            dt=self.dt
-        )
+        # Acceleration was already calculated once above from the same sorted snapshot.
         
         # 5. SIGNAL LOGIC
         if self.signals:
@@ -354,14 +343,14 @@ class TrafficEngine:
             # Only count vehicles whose phase is currently GREEN (throughput, not queue).
             # This ensures adaptive mode weights phases by how many cars MOVED through,
             # not how many were stuck waiting at red.
-            lane_lens = self.map.get_lane_lengths(lane)
+            lane_lens = self.map.get_lane_lengths(lane_ids)
             dist_to_end = lane_lens - pos
             sensor_mask = (dist_to_end < SENSOR_RANGE) & (dist_to_end > 0.0)
 
             detector_counts = np.zeros((self.signals.num_nodes, self.signals.num_phases + 1), dtype=np.int32)
 
             if np.any(sensor_mask):
-                detected_lanes = lane[sensor_mask]
+                detected_lanes = lane_ids[sensor_mask]
                 detected_lanes_int = detected_lanes.astype(int)
                 det_nodes = self.map.signal_node_idx[detected_lanes_int]
                 det_phases = self.map.signal_phase_idx[detected_lanes_int]
@@ -380,7 +369,7 @@ class TrafficEngine:
             # B. COMPLIANCE LOGIC
             if np.any(sensor_mask): 
                 candidates_idx = np.where(sensor_mask)[0]
-                cand_lanes = lane[candidates_idx]
+                cand_lanes = lane_ids[candidates_idx]
                 
                 # Convert to int array for CuPy compatibility
                 cand_lanes_int = cand_lanes.astype(int)
@@ -423,11 +412,11 @@ class TrafficEngine:
                 acc[indices_to_stop] = np.minimum(acc[indices_to_stop], req_acc)
         
         # 6. Integration
-        update_kinematics(pos, v, acc, self.dt)
-        
-        # 7. Write Back
-        sorted_vehicles[:, IDX_VEL] = v
-        sorted_vehicles[:, IDX_POS_ON_LANE] = pos
+        new_pos, new_v = update_kinematics(pos, v, acc, self.dt)
+
+        # 7. Write Back: update_kinematics returns new arrays; it is not in-place.
+        sorted_vehicles[:, IDX_VEL] = new_v
+        sorted_vehicles[:, IDX_POS_ON_LANE] = new_pos
         sorted_vehicles[:, IDX_ACC] = acc
         
         # 8. Boundaries

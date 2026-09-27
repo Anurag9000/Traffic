@@ -1,4 +1,6 @@
 from core.gpu import xp as np
+from core import gpu as gpu_backend
+import sys
 from typing import Tuple, Dict, Optional, List
 from core.physics import update_kinematics, calculate_idm_vectorized
 from core.lanes import LaneMap
@@ -41,7 +43,9 @@ VEHICLE_PARAMS = {
 
 class TrafficEngine:
     def __init__(self, lane_map: LaneMap, signals: SignalControllerVector = None, max_vehicles: int = 10000, dt: float = 0.1):
-        self.map = lane_map 
+        self.map = lane_map
+        self.xp = np
+        self.gpu = gpu_backend
         self.signals = signals
         self.max_vehicles = max_vehicles
         self.dt = dt
@@ -69,9 +73,13 @@ class TrafficEngine:
         
     def spawn_vehicles(self, count: int, lane_ids: np.ndarray, positions: np.ndarray, 
                        types: np.ndarray, targets: Optional[np.ndarray] = None):
-        if self.active_count + count > self.max_vehicles:
-            print(f"WARNING: Vehicle limit reached ({self.max_vehicles}). Skipping spawn.", file=sys.stderr)
-            return
+        if count < 0:
+            raise ValueError("spawn count must be nonnegative")
+        if count == 0:
+            return np.zeros(0, dtype=bool)
+        capacity = max(0, self.max_vehicles - self.active_count)
+        if capacity == 0:
+            return np.zeros(count, dtype=bool)
             
         start_idx = self.active_count
         
@@ -114,8 +122,11 @@ class TrafficEngine:
                 blocked_set.add(lid) # Mark blocked so we don't spawn 2 cars on same lane same tick
         
         if not valid_indices:
-            # All blocked
-            return
+            # All starts blocked; retain requests in the caller's backlog.
+            return np.zeros(count, dtype=bool)
+        # Admit only available slots; return original-shape success mask so
+        # the spawner can retry requests that exceeded capacity.
+        valid_indices = valid_indices[:capacity]
 
             # Check Gap Safety (Existing)
             # Check Vehicle Length vs Lane Length (New Fix)
@@ -189,10 +200,10 @@ class TrafficEngine:
         # We can iterate or use mask.
         
         # Define arrays for params
-        p_len = np.zeros(count, dtype=np.float32)
-        p_vmax = np.zeros(count, dtype=np.float32)
-        p_acc = np.zeros(count, dtype=np.float32)
-        p_dec = np.zeros(count, dtype=np.float32)
+        p_len = np.zeros(spawn_count, dtype=np.float32)
+        p_vmax = np.zeros(spawn_count, dtype=np.float32)
+        p_acc = np.zeros(spawn_count, dtype=np.float32)
+        p_dec = np.zeros(spawn_count, dtype=np.float32)
         
         # If types is cupy array, convert to numpy for dict lookup?
         # Or use np.choose if types are 0..3
@@ -675,23 +686,22 @@ class TrafficEngine:
              vehicles[idxs, IDX_LANE_ID] = targets
              vehicles[idxs, IDX_POS_ON_LANE] = overruns
              
-        # C. Arrived
-        arrived_mask = (best_next_lane == -2)
-        if self.xp.any(arrived_mask):
-             idxs = cross_indices[arrived_mask]
+        # C. Target arrival (-2) or terminal outbound link (-1).
+        # A terminal link is a completed exit, never a permanent active vehicle.
+        done_mask = (best_next_lane == -2) | (best_next_lane == -1)
+        if self.xp.any(done_mask):
+             idxs = cross_indices[done_mask]
              vehicles[idxs, IDX_STATUS] = 0.0
              vehicles[idxs, IDX_POS_ON_LANE] = -1000.0
-             
-             ids = vehicles[idxs, IDX_ID]
-             starts = vehicles[idxs, IDX_START_TIME]
-             
-             # Logging to list (Python overhead, inevitable for now)
-             ids_cpu = self.gpu.to_numpy(ids)
-             starts_cpu = self.gpu.to_numpy(starts)
+             ids_cpu = self.gpu.to_numpy(vehicles[idxs, IDX_ID])
+             starts_cpu = self.gpu.to_numpy(vehicles[idxs, IDX_START_TIME])
+             arrived_cpu = self.gpu.to_numpy(best_next_lane[done_mask] == -2)
              end_t = self.current_time
-             
              for i in range(len(ids_cpu)):
-                  self.completed_trips.append((int(ids_cpu[i]), float(starts_cpu[i]), end_t, 1))
+                  self.completed_trips.append((
+                      int(ids_cpu[i]), float(starts_cpu[i]), end_t,
+                      1 if bool(arrived_cpu[i]) else 0,
+                  ))
 
     def _update_lane_changes(self):
         """

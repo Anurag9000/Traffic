@@ -9,11 +9,23 @@ import os
 import sys
 import warnings
 
-# GPU enabled by default - automatic fallback to CPU
+# CPU admission is authoritative regardless of which supported launcher selected it.
+# Treat an explicitly empty CUDA mask as CPU-only, but not an absent mask.
+_CPU_TRUE = {"1", "true", "yes", "on"}
 FORCE_CPU = (
-    os.environ.get("OPF_ADP_DISABLE_GPU_ACCELERATORS", "").strip() == "1"
-    or os.environ.get("TRAFFIC_FORCE_CPU", "").strip().lower() in {"1", "true", "yes", "on"}
-    or os.environ.get("CUDA_VISIBLE_DEVICES") in {"", "-1"}
+    any(
+        os.environ.get(name, "").strip().lower() in _CPU_TRUE
+        for name in (
+            "CPU_ONLY",
+            "TRAINING_CONTROL_CPU_ONLY",
+            "OPF_ADP_DISABLE_GPU_ACCELERATORS",
+            "TRAFFIC_FORCE_CPU",
+        )
+    )
+    or (
+        "CUDA_VISIBLE_DEVICES" in os.environ
+        and os.environ["CUDA_VISIBLE_DEVICES"].strip() in {"", "-1"}
+    )
 )
 
 if FORCE_CPU:

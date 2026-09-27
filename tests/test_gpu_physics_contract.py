@@ -27,3 +27,20 @@ def test_empty_idm_result_uses_selected_backend():
     result = physics.calculate_idm_vectorized(*([xp.asarray([])] * 7))
     assert isinstance(result, xp.ndarray)
     assert result.size == 0
+
+
+def test_central_cpu_admission_disables_cupy_in_subprocess():
+    import os
+    from pathlib import Path
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parents[1]
+    env = dict(os.environ, OPF_ADP_DISABLE_GPU_ACCELERATORS="1",
+               CUDA_VISIBLE_DEVICES="0")
+    child = subprocess.run(
+        [sys.executable, "-c", "from core.gpu import USING_GPU, xp; print('BACKEND=' + ('cupy' if USING_GPU else xp.__name__))"],
+        cwd=root, env=env, text=True, capture_output=True, check=False,
+    )
+    assert child.returncode == 0, child.stderr
+    assert child.stdout.strip().endswith("BACKEND=numpy")

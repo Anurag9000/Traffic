@@ -5,11 +5,16 @@ Provides automatic GPU/CPU abstraction using CuPy/NumPy.
 GPU is enabled by default with automatic fallback to CPU.
 """
 
+import os
 import sys
 import warnings
 
 # GPU enabled by default - automatic fallback to CPU
-FORCE_CPU = False
+FORCE_CPU = (
+    os.environ.get("OPF_ADP_DISABLE_GPU_ACCELERATORS", "").strip() == "1"
+    or os.environ.get("TRAFFIC_FORCE_CPU", "").strip().lower() in {"1", "true", "yes", "on"}
+    or os.environ.get("CUDA_VISIBLE_DEVICES") in {"", "-1"}
+)
 
 if FORCE_CPU:
     import numpy as np
